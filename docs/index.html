@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="Companion interactive calculator for Time to Onset in Drug Safety (CALC-SPEC 1.0). Educational use only. Runs locally in the browser.">
+<title>TTO Companion Calculator</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to the calculator</a>
+<header class="site">
+  <div class="wrap">
+    <h1>TTO Companion Calculator</h1>
+    <p class="sub">Companion to <em>Time to Onset in Drug Safety</em> by Dr. Hafez Selim (Chapter 24). Intervals, sequence and gated technical arithmetic under CALC-SPEC 1.0.</p>
+    <span class="version-label" id="version-label">TTO Companion Tools v1.0 (CALC-SPEC 1.0)</span>
+  </div>
+</header>
+<div class="wrap">
+  <div class="banner" role="note" aria-label="Educational use only">
+    <strong>Educational use only. Not validated for regulated production use.</strong>
+    <p>This calculator is not a dosing calculator and does not assess causality: no result is a causality category, a probability, or a statement that an event is related to a drug. All calculation runs in this browser; nothing is sent anywhere and nothing is saved unless you save a file yourself. Use fictional or synthetic data unless your organization&rsquo;s rules cover this tool.</p>
+  </div>
+  <div class="toolbar" role="toolbar" aria-label="Case actions">
+    <div class="group">
+      <label class="inline" for="example-select">Examples</label>
+      <select id="example-select" aria-label="Load a fictional example case">
+        <option value="">Load a fictional example&hellip;</option>
+      </select>
+    </div>
+    <div class="group">
+      <button type="button" data-action="open-file">Open file&hellip;</button>
+      <input type="file" id="file-input" class="hidden-file" accept=".json,.csv,application/json,text/csv" tabindex="-1" aria-hidden="true">
+      <button type="button" data-action="save-case">Save case file</button>
+      <button type="button" data-action="new-version">New case version</button>
+      <button type="button" class="danger" data-action="reset">Reset</button>
+    </div>
+  </div>
+  <div id="toast" class="notice" role="status" aria-live="polite" hidden></div>
+  <nav class="tabs" role="tablist" aria-label="Calculator sections">
+    <button type="button" role="tab" id="tab-facts" aria-controls="panel-facts" aria-selected="true">1 Source facts</button>
+    <button type="button" role="tab" id="tab-arith" aria-controls="panel-arith" aria-selected="false" tabindex="-1">2 Arithmetic</button>
+    <button type="button" role="tab" id="tab-tech" aria-controls="panel-tech" aria-selected="false" tabindex="-1">3 Technical mode</button>
+    <button type="button" role="tab" id="tab-assess" aria-controls="panel-assess" aria-selected="false" tabindex="-1">4 Assessment</button>
+    <button type="button" role="tab" id="tab-export" aria-controls="panel-export" aria-selected="false" tabindex="-1">5 Export</button>
+    <button type="button" role="tab" id="tab-verify" aria-controls="panel-verify" aria-selected="false" tabindex="-1">Verification</button>
+    <button type="button" role="tab" id="tab-about" aria-controls="panel-about" aria-selected="false" tabindex="-1">About</button>
+  </nav>
+  <main id="main">
+    <section class="panel" id="panel-facts" role="tabpanel" aria-labelledby="tab-facts"></section>
+    <section class="panel" id="panel-arith" role="tabpanel" aria-labelledby="tab-arith" hidden></section>
+    <section class="panel" id="panel-tech" role="tabpanel" aria-labelledby="tab-tech" hidden></section>
+    <section class="panel" id="panel-assess" role="tabpanel" aria-labelledby="tab-assess" hidden></section>
+    <section class="panel" id="panel-export" role="tabpanel" aria-labelledby="tab-export" hidden></section>
+    <section class="panel" id="panel-verify" role="tabpanel" aria-labelledby="tab-verify" hidden></section>
+    <section class="panel" id="panel-about" role="tabpanel" aria-labelledby="tab-about" hidden></section>
+    <noscript><p class="banner">This calculator needs JavaScript. It runs entirely in your browser and makes no network requests.</p></noscript>
+  </main>
+</div>
+<footer class="site">
+  <div class="wrap">
+    TTO Companion Tools v1.0 (CALC-SPEC 1.0) &middot; Educational tool, not validated for regulated production use &middot; No data leaves this computer &middot;
+    <a href="https://github.com/abdu94-hash/tto-companion-tools" rel="noreferrer">Source and license (CC BY-NC 4.0)</a>
+  </div>
+</footer>
+<script src="tto_calc_engine.js"></script>
+<script src="tto_verify.js"></script>
+<script src="vectors.js"></script>
+<script src="examples.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
