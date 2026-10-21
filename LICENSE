@@ -1,0 +1,28 @@
+TTO Companion Tools
+Copyright (c) 2026 Hafez Selim
+
+This work (the interactive calculator, the Excel workbook, the calculation engine, the verification
+vectors and the accompanying documentation in this repository) is licensed under the
+Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0).
+
+You are free to:
+  Share  - copy and redistribute the material in any medium or format.
+  Adapt  - remix, transform, and build upon the material.
+
+Under the following terms:
+  Attribution    - You must give appropriate credit, provide a link to the license, and indicate if
+                   changes were made. Credit: "TTO Companion Tools, Hafez Selim, companion to Time to
+                   Onset in Drug Safety (https://github.com/abdu94-hash/tto-companion-tools)".
+  NonCommercial  - You may not use the material for commercial purposes.
+  No additional restrictions - You may not apply legal terms or technological measures that legally
+                   restrict others from doing anything the license permits.
+
+The full legal code is at: https://creativecommons.org/licenses/by-nc/4.0/legalcode
+A human-readable summary is at: https://creativecommons.org/licenses/by-nc/4.0/
+
+The text of the book "Time to Onset in Drug Safety" is NOT covered by this license; all rights in
+the book are reserved by the author.
+
+DISCLAIMER: These tools are provided "as is", for education only, without warranty of any kind.
+They are not validated for regulated production use, are not dosing calculators, and do not assign
+causality. See README.md.
