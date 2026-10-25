@@ -1,8 +1,10 @@
 /*
- * TTO Companion Tools v1.0 - fictional teaching cases from the book, as calculator inputs.
+ * TTO Companion Tools v1.1 - fictional teaching cases from the book, as calculator inputs (CALC-SPEC 1.1).
  * Every date, time and value is taken unchanged from the case's home chapter:
  *   C01 (version 2): Chapter 3, Section 3.7     C04 (version 2): Chapter 11, Section 11.8
  *   C28 (version 2): Chapter 20, Section 20.4   (the C04 Q8 rows follow Chapter 23, Section 23.11)
+ * C28's onset is entered as a laboratory-defined onset (CALC-SPEC 1.1, C4): after the last undetectable HBV DNA
+ * (MS-NEG3) and on or before the first positive result (MS-DET); the bounds are the chapter's 9 February to 12 May 2026.
  * All cases are fictional. No real patient data.
  */
 (function (root, factory) {
@@ -154,7 +156,7 @@
     notes: 'The US label reports HBV reactivation up to 24 months after completion of therapy (RITUXAN US 5.3); the EU SmPC gives no timing (MabThera EU 4.4). Months are compared on the calendar, never converted to days.',
     events: [
       { id: 'EV1', term: 'Hepatitis B virus reactivation (virological)', source: 'Hematology summary; hepatology letter',
-        onset: range('2026-02-09', '2026-05-12', 'Between the last undetectable HBV DNA (9 February 2026) and the first positive result (12 May 2026)') }
+        onset: { type: 'lab', last_normal_ref: 'MS-NEG3', first_abnormal_ref: 'MS-DET', original: 'Between the last undetectable HBV DNA (9 February 2026) and the first positive result (12 May 2026)' } }
     ],
     milestones: [
       { id: 'MS-BASE', kind: 'baseline', label: 'Baseline serology', value: 'HBsAg negative, anti-HBc positive, HBV DNA not detected', source: 'Hematology summary', timing: d('2024-11-11', '11/11/2024') },

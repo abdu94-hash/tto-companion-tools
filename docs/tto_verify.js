@@ -1,5 +1,5 @@
 /*
- * TTO Companion Tools v1.0 - verification runner for CALC-SPEC 1.0 vectors V01-V27.
+ * TTO Companion Tools v1.1 - verification runner for CALC-SPEC 1.1 vectors V01-V38.
  * Shared by the calculator's Verification tab and tests/run_vectors.js (Node).
  * Compares unrounded values with the JSON tolerance (relative 1e-6; absolute 1e-9 when the expected value is 0),
  * and compares units, sequence status and flags exactly.
@@ -54,9 +54,35 @@
         res = E.c4Bounded(a.lo, a.hi, o.lo, o.hi);
         got = { minimum: res.minimum, maximum: res.maximum, unit: res.unit, sequence: res.sequence, flags: res.flags };
         break;
+      case 'C4 (laboratory-defined onset)':
+        var cl = miniCase(E, {
+          exposures: [{ id: 'EX1', drug: 'Drug A', role: 'suspect', records: [{ id: 'EX1-S', kind: 'start', label: 'Start', timing: T(inp.anchor) }] }],
+          milestones: [{ id: 'MS-NORMAL', kind: 'test', label: 'Last normal test', timing: T(inp.last_normal_test) },
+            { id: 'MS-ABNORMAL', kind: 'test', label: 'First abnormal test', timing: T(inp.first_abnormal_test) }],
+          events: [{ id: 'EV1', term: 'Laboratory-defined event', onset: { type: 'lab', last_normal_ref: 'MS-NORMAL', first_abnormal_ref: 'MS-ABNORMAL', original: 'between the tests' } }],
+          links: [{ id: 'L1', exposure_id: 'EX1', event_id: 'EV1', reason: 'vector' }],
+          intervals: [{ id: 'I1', exposure_id: 'EX1', event_id: 'EV1', anchor_type: 'FIRST_ADMIN' }]
+        });
+        var bounds = E.labOnsetTiming(E.indexCase(cl), cl.events[0].onset), rl = E.evaluateCase(cl).records[0];
+        got = { onset_lower: bounds.lower, onset_upper: bounds.upper, minimum: rl.Interval_Minimum, maximum: rl.Interval_Maximum, unit: rl.Unit, sequence: rl.Sequence_Status, flags: rl.QC_Flags };
+        break;
+      case 'C7':
+        var c7 = miniCase(E, {
+          exposures: [{ id: 'EX1', drug: 'Drug A', role: 'suspect', records: [{ id: 'STOP', kind: 'stop', label: 'Cessation', timing: T(inp.cessation) }] }].concat(
+            (inp.other_records || []).map(function (o, i) { return { id: 'EXO' + (i + 1), drug: 'Other drug ' + (i + 1), role: o.role, records: [{ id: o.id, kind: 'start', label: 'Start', timing: T(o.timing) }] }; })),
+          milestones: [{ id: 'MS-REC', kind: 'recovery', label: 'Recovery', timing: T(inp.recovery) }].concat(
+            inp.interventions.map(function (x) { return { id: x.id, kind: 'intervention', label: x.text || '', timing: T(x.timing) }; })),
+          events: [{ id: 'EV1', term: 'Event', onset: { type: 'none', original: '' } }],
+          links: [{ id: 'L1', exposure_id: 'EX1', event_id: 'EV1', reason: 'vector' }],
+          recoveries: [{ id: 'R1', exposure_id: 'EX1', event_id: 'EV1', cessation_ref: 'STOP', recovery_ref: 'MS-REC' }]
+        });
+        var r7 = E.evaluateCase(c7).records[0];
+        got = { value: r7.Interval_Value, unit: r7.Unit, sequence: r7.Sequence_Status, interventions_counted: r7.Interventions_Counted || [], flags: r7.QC_Flags };
+        break;
       case 'C5':
         if (inp.administrations) {
-          var recs = inp.administrations.map(function (s, i) { return { id: 'AD' + (i + 1), kind: i === 0 ? 'start' : 'administration', label: 'Dose ' + (i + 1), timing: T(s) }; });
+          var timingOfAdmin = function (s) { return typeof s === 'string' ? T(s) : { type: 'partial', precision: 'range', lower: s.lower, upper: s.upper, original: s.text || '' }; };
+          var recs = inp.administrations.map(function (s, i) { return { id: 'AD' + (i + 1), kind: i === 0 ? 'start' : 'administration', label: 'Dose ' + (i + 1), timing: timingOfAdmin(s) }; });
           var c = miniCase(E, {
             exposures: [{ id: 'EX1', drug: 'Drug A', role: 'suspect', records: recs }],
             events: [{ id: 'EV1', term: 'Event', onset: T(inp.onset) }],
@@ -64,8 +90,8 @@
             intervals: [{ id: 'I1', exposure_id: 'EX1', event_id: 'EV1', anchor_type: inp.anchor_type }]
           });
           var r = E.evaluateCase(c).records[0];
-          var chosen = recs.filter(function (x) { return x.id === r.Anchor_Record_ID; })[0];
-          got = { selected_anchor: chosen ? chosen.timing.original : null, value: r.Interval_Value, unit: r.Unit, sequence: r.Sequence_Status, flags: r.QC_Flags };
+          var chosen = r.Blocked ? null : recs.filter(function (x) { return x.id === r.Anchor_Record_ID; })[0];
+          got = { selected_anchor: chosen ? chosen.timing.original : null, value: r.Interval_Value, unit: r.Blocked ? null : r.Unit, sequence: r.Sequence_Status || null, flags: r.QC_Flags };
         } else {
           var c2 = miniCase(E, {
             exposures: [{ id: 'EX1', drug: 'Drug A', role: 'suspect', records: [
@@ -119,8 +145,36 @@
     return { flags: flags };
   }
 
+  /** V35 (CALC-SPEC 1.1 rule G9): every E-code of one result, in Section 5 order. */
+  function runErrorListing(E, v) {
+    var lists = v.inputs.cases.map(function (cs) {
+      if (cs.check === 'technical') return codesOf(E, function () { E.technical[cs.rule](cs); });
+      var c = miniCase(E, {
+        exposures: [{ id: cs.drug_id, drug: 'Drug', role: 'suspect', records: [{ id: cs.drug_id + '-S', kind: 'start', label: 'Start', timing: E.timingFromIso(cs.anchor) }] }],
+        events: [{ id: cs.event_id, term: 'Event', onset: E.timingFromIso(cs.onset) }],
+        links: cs.links.map(function (l, i) { return { id: 'L' + i, exposure_id: l[0], event_id: l[1] }; }),
+        intervals: [{ id: 'I1', exposure_id: cs.drug_id, event_id: cs.event_id, anchor_type: 'FIRST_ADMIN' }]
+      });
+      return E.evaluateCase(c).records[0].QC_Flags.filter(function (f) { return f.charAt(0) === 'E'; });
+    });
+    return { flags: lists };
+  }
+  /** V36 (CALC-SPEC 1.1 gate rule): the calculator's own gate path (evaluateTechnical) with gate details and statuses. */
+  function runGate(E, v) {
+    var results = [], lists = [];
+    v.inputs.cases.forEach(function (cs) {
+      var inputs = { unit: cs.unit }, meta = {};
+      (E.Q_PARAMS[cs.rule] || []).forEach(function (p) { inputs[p.key] = String(cs[p.key]); meta[p.key] = { status: (cs.parameter_status || {})[p.key] || '', source: 'vector' }; });
+      var r = E.evaluateTechnical({ id: 'T1', rule: cs.rule, inputs: inputs, meta: meta, gate: cs.gate })[0];
+      results.push(r.Blocked ? null : r.Results[0].value); lists.push(r.QC_Flags);
+    });
+    return { fraction_remaining: results, flags: lists };
+  }
+
   function runTechnical(E, v) {
     var inp = v.inputs, got = {};
+    if (v.rule === 'Error listing') return runErrorListing(E, v);
+    if (v.rule === 'Gate') return runGate(E, v);
     if (v.rule === 'Technical validation') {
       var flags = [];
       inp.cases.forEach(function (cs) { codesOf(E, function () { E.technical[cs.rule](cs); }).forEach(function (x) { flags.push(x); }); });

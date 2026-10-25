@@ -1,5 +1,5 @@
 /*
- * TTO Companion Tools v1.0 - calculator user interface (Chapter 24). CALC-SPEC 1.0.
+ * TTO Companion Tools v1.1 - calculator user interface (Chapter 24). CALC-SPEC 1.1.
  * All calculation is done by tto_calc_engine.js in this browser. No network requests, no analytics,
  * no browser storage: a case is saved only when the user downloads a file.
  */
@@ -104,7 +104,14 @@
     if (!t) { t = o.tsOnly ? emptyTs() : { type: 'none', original: '' }; setPath(state.c, path, t); }
     var s = '<fieldset class="timing"><legend class="small"><strong>' + h(label) + '</strong></legend><div class="grid">';
     if (!o.tsOnly) {
-      s += selectF('Entered as', path + '.type', [['timestamp', 'Date and time'], ['date', 'Date only'], ['partial', 'Partial date or range'], ['none', 'Not recorded']], { rerender: true });
+      var types = [['timestamp', 'Date and time'], ['date', 'Date only'], ['partial', 'Partial date or range'], ['none', 'Not recorded']];
+      if (o.allowLab) types.splice(3, 0, ['lab', 'Laboratory-defined (between two tests)']);
+      s += selectF('Entered as', path + '.type', types, { rerender: true });
+    }
+    if (t.type === 'lab') {
+      var msOpts = [['', '— choose a test milestone —']].concat(state.c.milestones.map(function (m) { return [m.id, m.id + ' – ' + (m.label || m.kind || '') + ' (' + E.fmtTiming(m.timing) + ')']; }));
+      s += selectF('Last normal test (lower bound)', path + '.last_normal_ref', msOpts);
+      s += selectF('First abnormal test (upper bound)', path + '.first_abnormal_ref', msOpts);
     }
     if (t.type === 'timestamp') {
       s += inputF('Local date (YYYY-MM-DD)', path + '.date', { placeholder: 'YYYY-MM-DD', inputmode: 'numeric' });
@@ -127,6 +134,16 @@
   }
   function readoutFor(t) {
     if (!t || !t.type || t.type === 'none') return { text: 'Not recorded. Nothing is imputed.', bad: false };
+    if (t.type === 'lab') {
+      try {
+        var lt = E.labOnsetTiming(E.indexCase(state.c), t);
+        return { text: 'Reads as: ' + E.fmtRangeDays(E.parseDateStr(lt.lower), E.parseDateStr(lt.upper)) + ' (laboratory-defined range: lower bound = date of the last normal test ' + lt.last_normal_ref +
+          ', upper bound = date of the first abnormal test ' + lt.first_abnormal_ref + '; C4 applies). You decide which results are normal; nothing is imputed.', bad: false };
+      } catch (e) {
+        if (!(e instanceof E.CalcError)) throw e;
+        return { text: e.codes.map(function (c) { return c + ': ' + E.message(c, e.details[c]); }).join(' '), bad: true };
+      }
+    }
     try {
       E.resolveTiming(t, 'this date');
       return { text: 'Reads as: ' + E.fmtTiming(t) + (t.type === 'partial' ? '. The bounds are kept; no single date is imputed.' : ''), bad: false };
@@ -221,8 +238,10 @@
       if (marks.length) rows.push({ cls: 'exposure', label: x.drug || x.id, kind: 'exposure', marks: marks, span: true });
     });
     (c.events || []).forEach(function (ev) {
-      var p = tlPoint(ev.onset);
-      if (p) rows.push({ cls: 'event', label: (ev.term || ev.id) + ' (onset)', kind: 'event', marks: [{ p: p, title: 'Onset: ' + E.fmtTiming(ev.onset) }] });
+      var on = ev.onset;
+      if (on && on.type === 'lab') { try { on = E.eventOnset(c, ev); } catch (e) { on = null; } }
+      var p = on ? tlPoint(on) : null;
+      if (p) rows.push({ cls: 'event', label: (ev.term || ev.id) + ' (onset)', kind: 'event', marks: [{ p: p, title: 'Onset: ' + E.fmtTiming(on) + (on.lab ? ' (laboratory-defined)' : '') }] });
       else undated.push((ev.term || ev.id) + ' onset');
     });
     (c.milestones || []).forEach(function (m) {
@@ -289,7 +308,7 @@
     c.events.forEach(function (ev, i) {
       var p = 'events.' + i;
       s += '<div class="card sub"><div class="grid">' + inputF('Event_ID', p + '.id', { rerender: true }) + inputF('Event term', p + '.term', { rerender: true }) + inputF('Source', p + '.source') + '</div>' +
-        timingEditor('Onset', p + '.onset') + '<div class="row-actions">' + btn('Remove event', 'remove', { path: 'events', index: i }, 'small danger') + '</div></div>';
+        timingEditor('Onset', p + '.onset', { allowLab: true }) + '<div class="row-actions">' + btn('Remove event', 'remove', { path: 'events', index: i }, 'small danger') + '</div></div>';
     });
     s += '</div>';
     // exposures
@@ -389,7 +408,7 @@
     s += '</div>';
     // recovery
     s += '<div class="card"><div class="card-head"><h3>Recovery intervals (C7)</h3>' + btn('Add recovery interval', 'add', { list: 'recoveries' }) + '</div>' +
-      '<p class="small muted">From CESSATION to a recovery milestone. A recorded intervention between them raises W_INTERVENTION_BEFORE_RECOVERY. C7 has no verification vector yet; check its result by hand.</p>';
+      '<p class="small muted">From CESSATION to a recovery milestone (C1, C2 or C4 by the precision of the two records). Only milestones of kind &ldquo;Intervention or treatment&rdquo; count: one that can lie between cessation and recovery, ends included, raises W_INTERVENTION_BEFORE_RECOVERY. Nothing is inferred from other records, such as an exposure whose role is treatment of the event (CALC-SPEC 1.1; vectors V28&ndash;V30).</p>';
     c.recoveries.forEach(function (q, i) {
       var p = 'recoveries.' + i;
       s += '<div class="card sub"><div class="grid">' + inputF('Recovery ID', p + '.id', { rerender: true }) + selectF('Drug exposure episode', p + '.exposure_id', exposureOptions(), { rerender: true }) +
@@ -411,8 +430,9 @@
     if (rule === 'Q4') t.inputs.cl_unit = '';
     if (rule === 'Q8') t.inputs.antibody = false;
     if (rule === 'Q9') { t.inputs = { segments: [{ start: emptyTs(), end: emptyTs(), rate: '', rate_unit: '' }], onset: emptyTs(), planned_dose_mg: '' }; t.meta = { segments: { status: '', source: '' }, onset: { status: '', source: '' } }; }
-    if (rule === 'Q10') { t.inputs = { administrations: [{ dose: '', dose_unit: '', bsa: '' }], method_b: '', method_b_bsa: '' }; t.meta = { administrations: { status: '', source: '' } }; }
+    if (rule === 'Q10') { t.inputs = { administrations: [{ date: '', dose: '', dose_unit: '', bsa: '' }], method_b: '', method_b_bsa: '' }; t.meta = { administrations: { status: '', source: '' } }; }
     if (rule === 'Q11') { t.inputs.scr_unit = ''; t.inputs.sex = ''; t.inputs.weight_type = ''; t.inputs.sample_date = ''; }
+    if (rule === 'Q6') t.inputs.use = '';
     return t;
   }
   function paramRow(base, p, unitText) {
@@ -427,6 +447,7 @@
     s += '<p class="small"><strong>Equation.</strong> ' + h(E.EQUATIONS[rule]) + '</p>';
     var hasTime = (E.Q_PARAMS[rule] || []).some(function (p) { return p.time; });
     if (hasTime) s += '<div class="grid">' + selectF('Time unit (one unit for every time input; mixed units are not converted)', base + '.inputs.unit', TIME_UNIT_OPTS) + '</div>';
+    if (rule === 'Q6') s += '<div class="grid">' + selectF('Use (CALC-SPEC 1.1 names two; the formula is the same)', base + '.inputs.use', [['', '— choose —'], ['replacement or recovery', 'Replacement or recovery after withdrawal'], ['approach to a new level', 'Approach to a new level after a step change']]) + '</div>';
     if (rule === 'Q4') s += '<div class="grid">' + selectF('Clearance unit (both periods)', base + '.inputs.cl_unit', [['', '— choose —'], ['L/hour', 'L/hour'], ['mL/minute', 'mL/minute']]) + '</div>';
     if (rule === 'Q11') s += '<div class="grid">' + selectF('Serum creatinine unit', base + '.inputs.scr_unit', [['', '— choose —'], ['mg/dL', 'mg/dL'], ['µmol/L', 'µmol/L']]) +
       selectF('Sex as recorded', base + '.inputs.sex', [['', '— choose —'], ['male', 'male'], ['female', 'female'], ['not recorded', 'not recorded']]) +
@@ -441,7 +462,7 @@
       (t.inputs.segments || []).forEach(function (sg, j) {
         var sp = base + '.inputs.segments.' + j;
         s += '<div class="card"><h4>Segment ' + (j + 1) + '</h4>' + timingEditor('Start', sp + '.start', { tsOnly: true, noOriginal: true }) + timingEditor('End', sp + '.end', { tsOnly: true, noOriginal: true }) +
-          '<div class="grid">' + inputF('Rate', sp + '.rate', { inputmode: 'decimal' }) + selectF('Rate unit', sp + '.rate_unit', [['', '— choose —'], ['mg/hour', 'mg/hour'], ['mL/hour', 'mL/hour (not supported in version 1.0)']]) + '</div>' +
+          '<div class="grid">' + inputF('Rate', sp + '.rate', { inputmode: 'decimal' }) + selectF('Rate unit', sp + '.rate_unit', [['', '— choose —'], ['mg/hour', 'mg/hour'], ['mL/hour', 'mL/hour (not supported in version 1.1)']]) + '</div>' +
           '<div class="row-actions">' + btn('Remove segment', 'remove', { path: sp.replace(/\.\d+$/, ''), index: j }, 'small danger') + '</div></div>';
       });
       s += '<div class="row-actions">' + btn('Add segment', 'add-segment', { index: i }) + '</div>';
@@ -452,7 +473,7 @@
     if (rule === 'Q10') {
       (t.inputs.administrations || []).forEach(function (a, j) {
         var ap = base + '.inputs.administrations.' + j;
-        s += '<div class="grid">' + inputF('Dose ' + (j + 1), ap + '.dose', { inputmode: 'decimal' }) + selectF('Dose unit', ap + '.dose_unit', [['', '— choose —'], ['mg', 'mg'], ['g', 'g (not supported)'], ['micrograms', 'micrograms (not supported)']]) +
+        s += '<div class="grid">' + inputF('Date of administration ' + (j + 1) + ' (YYYY-MM-DD; for Method B by first or last)', ap + '.date', { placeholder: 'YYYY-MM-DD', inputmode: 'numeric' }) + inputF('Dose ' + (j + 1), ap + '.dose', { inputmode: 'decimal' }) + selectF('Dose unit', ap + '.dose_unit', [['', '— choose —'], ['mg', 'mg'], ['g', 'g (not supported)'], ['micrograms', 'micrograms (not supported)']]) +
           inputF('BSA at this administration (m²; blank if not recorded)', ap + '.bsa', { inputmode: 'decimal' }) +
           '<div class="field"><span class="lbl">&nbsp;</span>' + btn('Remove', 'remove', { path: base + '.inputs.administrations', index: j }, 'small danger') + '</div></div>';
       });
@@ -460,7 +481,7 @@
       s += '<div class="grid">' + selectF('Method B (only on request)', base + '.inputs.method_b', [['', 'Not requested'], ['first', 'Total dose / first BSA'], ['last', 'Total dose / last BSA'], ['stated', 'Total dose / a stated BSA']], { rerender: true }) +
         (t.inputs.method_b === 'stated' ? inputF('Stated BSA (m²)', base + '.inputs.method_b_bsa', { inputmode: 'decimal' }) : '') +
         selectF('Parameter_Status of the administrations', base + '.meta.administrations.status', STATUS_OPTS) + inputF('Source', base + '.meta.administrations.source') + '</div>' +
-        '<p class="small muted">The tool does not calculate BSA in version 1.0.</p>';
+        '<p class="small muted">Enter the BSA recorded at each administration. The tools never calculate BSA from height and weight or otherwise (CALC-SPEC 1.1). Method B by first or last uses the earliest and latest administration by date.</p>';
     }
     // gates
     if (E.COMMON_GATE_RULES.indexOf(rule) >= 0) {
@@ -543,7 +564,7 @@
 
   // ------------------------------------------------------------------ verification
   function renderVerifyStatic() {
-    return '<h2>Verification</h2><p class="lead">Runs CALC-SPEC 1.0 verification vectors V01–V27 against this calculator&rsquo;s engine, in this browser. Unrounded values are compared with a relative tolerance of 1 × 10⁻⁶ (absolute 1 × 10⁻⁹ when the expected value is zero); units, sequence status and flags must match exactly. V12 and V14 describe behavior and are demonstrated automatically.</p>' +
+    return '<h2>Verification</h2><p class="lead">Runs CALC-SPEC 1.1 verification vectors V01–V38 against this calculator&rsquo;s engine, in this browser (V01–V27 are the unchanged CALC-SPEC 1.0 vectors; V28–V38 are new in 1.1). Unrounded values are compared with a relative tolerance of 1 × 10⁻⁶ (absolute 1 × 10⁻⁹ when the expected value is zero); units, sequence status and flags must match exactly. V12 and V14 describe behavior and are demonstrated automatically.</p>' +
       '<div class="card"><button type="button" class="primary" data-action="run-verify">Run all verification vectors</button> <span class="small muted">Vector file: ' + h(VEC ? VEC.spec + ', ' + VEC.vectors.length + ' vectors, dated ' + VEC.date : 'not loaded') + '</span></div>' +
       '<div data-out="verify"></div>';
   }
@@ -577,27 +598,41 @@
   function renderAbout() {
     var flags = Object.keys(E.MESSAGES).map(function (k) { return '<tr><td><code>' + h(k) + '</code></td><td>' + h(E.flagType(k)) + '</td><td>' + h(E.MESSAGES[k]) + '</td></tr>'; }).join('');
     return '<h2>About this calculator</h2>' +
-      '<div class="two-col"><div class="card"><h3>What it does</h3><ul class="small"><li>Chronology intervals and bounds (C1–C7) with data-quality and sequence flags.</li><li>Optional technical arithmetic (Q1–Q5, Q7–Q11) with declared equations, units and assumptions, and a clearly labeled Q6 teaching demonstration.</li><li>Reviewer-authored biological-fit judgment with a required rationale.</li><li>Text, HTML, CSV and JSON export; fictional demonstration cases; a reset function.</li></ul></div>' +
+      '<div class="two-col"><div class="card"><h3>What it does</h3><ul class="small"><li>Chronology intervals and bounds (C1–C7) with data-quality and sequence flags.</li><li>Optional technical arithmetic (Q1–Q5, Q7–Q11) with declared equations, units and assumptions, and a clearly labeled Q6 teaching demonstration (replacement or recovery, or the approach to a new level).</li><li>Reviewer-authored biological-fit judgment with a required rationale.</li><li>Text, HTML, CSV and JSON export; fictional demonstration cases; a reset function.</li></ul></div>' +
       '<div class="card"><h3>What it does not do</h3><ul class="small"><li>No causality scoring, and no category produced from timing (rule G8).</li><li>No patient-specific PK or PD simulation, no dosing recommendation, no diagnosis.</li><li>Not for regulatory submissions; not validated for regulated production use.</li><li>No built-in product numbers presented as applying to a patient.</li></ul></div></div>' +
       '<div class="card"><h3>Local operation and privacy</h3><ul class="small"><li>Calculation runs in this browser. The page makes no network requests (its content security policy forbids them), loads nothing from other sites and has no analytics.</li><li>It does not request direct patient identifiers. Do not enter them in free-text fields.</li><li>Nothing is saved silently: there is no browser storage. A case is kept only if you download a file (Save case file or Export). Reset clears everything on screen.</li><li>On a shared device, anyone using this browser window can see what is on screen until you reset or close it, and a downloaded file stays in the downloads folder.</li><li>Local operation does not remove your workplace data-handling obligations. Use fictional or synthetic data unless your organization&rsquo;s rules cover this tool.</li></ul></div>' +
       '<div class="card"><h3>Four states of a result</h3><ul class="small"><li><strong>Result</strong>: value with its unit, rule, anchor and sequence status.</li><li><strong>Result with a W-code</strong>: the warning is part of the result and goes wherever the number goes.</li><li><strong>Result with an I-code</strong>: an annotation, such as approximate timing kept as reported.</li><li><strong>Blocked by an E-code</strong>: no value; the message names what is missing or wrong. A blank is not a zero.</li></ul></div>' +
-      '<div class="card"><h3>Flags and messages (CALC-SPEC 1.0, Section 5)</h3><div class="table-wrap"><table><thead><tr><th scope="col">Code</th><th scope="col">Type</th><th scope="col">Message shown</th></tr></thead><tbody>' + flags + '</tbody></table></div></div>' +
+      '<div class="card"><h3>Flags and messages (CALC-SPEC 1.1, Section 5)</h3><div class="table-wrap"><table><thead><tr><th scope="col">Code</th><th scope="col">Type</th><th scope="col">Message shown</th></tr></thead><tbody>' + flags + '</tbody></table></div></div>' +
       '<div class="card"><h3>Units and display rounding (Sections 6 and 7)</h3><div class="table-wrap"><table><thead><tr><th scope="col">Output</th><th scope="col">Display</th></tr></thead><tbody>' +
       '<tr><td>Minutes (C1)</td><td>Whole minutes; hours (one decimal) and elapsed days (minutes ÷ 1,440, two decimals) are derived displays</td></tr>' +
-      '<tr><td>Calendar days and treatment days</td><td>Whole days; never converted to hours</td></tr><tr><td>Fraction remaining or replaced</td><td>Percent to three significant figures</td></tr>' +
+      '<tr><td>Calendar days and treatment days</td><td>Whole days; never converted to hours</td></tr><tr><td>Fraction remaining or replaced</td><td>Percent to three significant figures; below 0.0001% in powers of ten</td></tr>' +
       '<tr><td>Accumulation factor and ratios</td><td>Two decimal places</td></tr><tr><td>Amounts in mg and mg/m²</td><td>One decimal place</td></tr>' +
-      '<tr><td>Percent of the planned dose (Q9)</td><td>One decimal place (no rule in CALC-SPEC 1.0; the unrounded value is always exported)</td></tr>' +
+      '<tr><td>Percent of the planned dose (Q9)</td><td>One decimal place (CALC-SPEC 1.1 Section 7; the unrounded value is always exported)</td></tr>' +
       '<tr><td>Estimated creatinine clearance</td><td>Whole mL/minute</td></tr><tr><td>Weeks, months, years</td><td>Stored as reported; never converted</td></tr>' +
       '<tr><td>Clearance</td><td>L/hour or mL/minute (1 L/hour = 16.667 mL/minute)</td></tr><tr><td>Serum creatinine</td><td>mg/dL or µmol/L (÷ 88.4)</td></tr></tbody></table></div>' +
       '<p class="small">Values are kept at full precision and rounded only for display; exports carry the unrounded value beside the displayed one.</p></div>' +
-      '<div class="card"><h3>Implementation notes for version 1.0</h3><ul class="small">' +
-      '<li>Each technical calculation takes one time unit for all its time inputs; mixed units are not converted (CALC-SPEC Q1 asks for the same unit).</li>' +
-      '<li>Q7 accepts days only, as its inputs are specified in days.</li>' +
-      '<li>Q8 for a monoclonal antibody can carry W_BIOLOGIC_MODEL_CAUTION beside I_SCENARIO_NOT_CI when you tick the antibody box (as in the book&rsquo;s case C28).</li>' +
-      '<li>Reported timing in hours or minutes cannot be compared with a calendar-day interval, and weeks, months or years are never converted; such timing is kept as reported with I_APPROXIMATE_NOT_COMPARED.</li>' +
-      '<li>Interventions recorded on the cessation or recovery date count as between them for date-level C7 results.</li>' +
-      '<li>A documented constraint is recorded in the Constraint_Source field of the constrained record (an addition to the Section 8 fields).</li>' +
-      '<li>Gate confirmations require their details (half-life type, population, source; reference time; each input&rsquo;s status) or the result is blocked with E_MISSING_INPUT.</li></ul></div>' +
+      '<div class="card"><h3>What is new in version 1.1 (CALC-SPEC 1.1)</h3><ul class="small">' +
+      '<li><strong>Laboratory-defined onset (C4).</strong> An event onset can be entered as &ldquo;Laboratory-defined&rdquo;: the lower bound is the date of the last normal test and the upper bound the date of the first abnormal test (vector V31). You choose which results are normal. Case C28 now uses it.</li>' +
+      '<li><strong>C7 is verified</strong> by V28 (minute level, as in C01), V29 (date level, as in C04) and V30, a labeled no-flag variant.</li>' +
+      '<li><strong>Q6 has two named uses</strong> with one formula: replacement or recovery, and the approach to a new level (V32). You choose the use.</li>' +
+      '<li><strong>BSA is never calculated.</strong> Q10 takes the BSA recorded at each administration.</li></ul></div>' +
+      '<div class="card"><h3>Agreed rules where the calculator and the workbook differed (CALC-SPEC 1.1, Section 9)</h3><p class="small">The stricter behavior was chosen: block rather than guess, list every error, compare in UTC when offsets are known, and never infer an unrecorded intervention. Both tools at version 1.1 follow these rules.</p><ul class="small">' +
+      '<li><strong>Rule choice.</strong> The finest rule both records support (C1, C2 or C4); a coarser one on request (the date-level C2 box); never added precision.</li>' +
+      '<li><strong>LAST_DOSE_BEFORE_ONSET (C5).</strong> Only administrations with an exact date or time are candidates, ordered in UTC when offsets are known (V33). The result is blocked with E_MISSING_INPUT, so that you choose the anchor, when the last dose cannot be identified: a partial-date administration that could be the last dose (V34), an administration whose order relative to onset is uncertain, or two that cannot be told apart.</li>' +
+      '<li><strong>C7 interventions.</strong> Only milestones of kind &ldquo;Intervention or treatment&rdquo; count, when they can lie between cessation and recovery, ends included (UTC when offsets are known). An exposure whose role is treatment of the event is pointed out in Assumptions but never counted (V30).</li>' +
+      '<li><strong>Common gate.</strong> Confirmed only with all four confirmations and every detail (half-life type, population and source; reference time; each input&rsquo;s Parameter_Status). Each blank detail gives E_MISSING_INPUT, and the unconfirmed gate gives E_APPLICABILITY_UNCONFIRMED; both are listed (V36).</li>' +
+      '<li><strong>Every error is listed</strong>, each code once, E-codes first, then W- and I-codes, in the order of the flags table below (V35).</li>' +
+      '<li><strong>Q8 for a monoclonal antibody</strong> (tick box) carries W_BIOLOGIC_MODEL_CAUTION beside I_SCENARIO_NOT_CI (V37).</li>' +
+      '<li><strong>Q10 Method B</strong> by first or last administration uses the earliest and latest administration by date; blocked when only some dates are given or when two administrations share that date with different BSAs; with no dates at all, the order entered is used and stated (V38).</li>' +
+      '<li><strong>Units.</strong> A blank unit gives E_MISSING_INPUT; an unsupported unit gives E_INVALID_UNIT.</li>' +
+      '<li><strong>Display.</strong> Percentages below 0.0001% are shown in powers of ten (for example 3.41 × 10⁻²⁰%).</li>' +
+      '<li><strong>Export.</strong> Every record carries Tool_Version, Calculation_Version and Export_Timestamp, in the CALC-SPEC 1.1 Section 8 columns.</li></ul></div>' +
+      '<div class="card"><h3>Conventions recorded in CALC-SPEC 1.1</h3><ul class="small">' +
+      '<li>Each technical calculation takes one time unit for all its time inputs; mixed units are not converted. Q7 accepts days only.</li>' +
+      '<li>Reported timing in minutes, hours or days is compared with a C1 interval; against a calendar-day interval only calendar days are compared; weeks, months or years are never converted. Otherwise it is kept as reported with I_APPROXIMATE_NOT_COMPARED.</li>' +
+      '<li>A documented constraint is shown as a second, &ldquo;-constrained&rdquo; record with its Constraint_Source, beside the unconstrained one.</li>' +
+      '<li>Interval records carry the CALC-SPEC 1.1 limitations text: the interval describes sequence and spacing, not causation.</li>' +
+      '<li>Not yet in the specification (future work): END_OF_ADMINISTRATION, INTERVENTION and interruption or restart anchor types; a dose-reduction input; comparison with label windows stated in weeks. Use OTHER with a description, a DOSE_CHANGE record, or your own judgment meanwhile.</li></ul></div>' +
       '<div class="card"><h3>Version</h3><p class="small">' + h(E.VERSION_LABEL) + '. Companion to <em>Time to Onset in Drug Safety: A Technical Guide to ICSR Analysis Using Mechanism of Action, Pharmacokinetics and Pharmacodynamics</em> by Dr. Hafez Selim. License CC BY-NC 4.0.</p></div>';
   }
 
@@ -707,7 +742,7 @@
         state.dirty = true; renderAll(); break;
       }
       case 'add-segment': c.technical[+btnEl.getAttribute('data-index')].inputs.segments.push({ start: emptyTs(), end: emptyTs(), rate: '', rate_unit: '' }); renderAll(); break;
-      case 'add-admin': c.technical[+btnEl.getAttribute('data-index')].inputs.administrations.push({ dose: '', dose_unit: '', bsa: '' }); renderAll(); break;
+      case 'add-admin': c.technical[+btnEl.getAttribute('data-index')].inputs.administrations.push({ date: '', dose: '', dose_unit: '', bsa: '' }); renderAll(); break;
       case 'remove': {
         var arr = getPath(c, btnEl.getAttribute('data-path')); arr.splice(+btnEl.getAttribute('data-index'), 1);
         state.dirty = true; renderAll(); break;

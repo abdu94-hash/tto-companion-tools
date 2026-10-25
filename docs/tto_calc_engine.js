@@ -1,5 +1,5 @@
 /*
- * TTO Companion Tools v1.0 - calculation engine implementing CALC-SPEC 1.0
+ * TTO Companion Tools v1.1 - calculation engine implementing CALC-SPEC 1.1
  * Companion to "Time to Onset in Drug Safety" (Dr. Hafez Selim). License: CC BY-NC 4.0.
  *
  * Pure functions, no dependencies, no network access. Loads in the browser (global TTOCalc)
@@ -16,9 +16,9 @@
   'use strict';
 
   // ------------------------------------------------------------------ versions and fixed text
-  var SPEC_VERSION = 'CALC-SPEC 1.0';
-  var TOOL_VERSION = 'TTO Companion Tools v1.0';
-  var VERSION_LABEL = 'TTO Companion Tools v1.0 (CALC-SPEC 1.0)';
+  var SPEC_VERSION = 'CALC-SPEC 1.1';
+  var TOOL_VERSION = 'TTO Companion Tools v1.1';
+  var VERSION_LABEL = 'TTO Companion Tools v1.1 (CALC-SPEC 1.1)';
   var LIMITATION_TEXT = 'Educational tool, not validated for regulated production use. It is not a dosing ' +
     'calculator and it does not assess causality: no result is a causality category, a probability, or a ' +
     'statement that an event is related to a drug. Results are arithmetic on the facts entered, under the ' +
@@ -67,12 +67,27 @@
     Q11: 'Assumes stable creatinine. It is not drug clearance and not a dosing recommendation.'
   };
 
+  // Rule G9 (CALC-SPEC 1.1): QC_Flags lists each code once, E-codes, then W-codes, then I-codes, in Section 5 order.
+  var FLAG_ORDER = Object.keys(MESSAGES);
+  function orderCodes(codes) {
+    var seen = [];
+    for (var i = 0; i < codes.length; i++) if (seen.indexOf(codes[i]) < 0) seen.push(codes[i]);
+    function rank(c) { var k = FLAG_ORDER.indexOf(c); return k < 0 ? FLAG_ORDER.length : k; }
+    return seen.map(function (c, i) { return [c, i]; }).sort(function (a, b) { return rank(a[0]) - rank(b[0]) || a[1] - b[1]; })
+      .map(function (x) { return x[0]; });
+  }
+
+  // CALC-SPEC 1.1 Section 3: limitations text for the C rules.
+  var C_LIMITATION_TEXT = 'The interval describes the sequence and spacing of recorded times; it is not evidence of causation.';
+  var C4_LIMITATION_ADD = ' The true interval lies between the bounds; no single date is imputed.';
+  var C7_LIMITATION_ADD = ' A recovery interval is not, by itself, evidence of positive dechallenge.';
+
   var RULE_TITLES = {
     C1: 'Exact elapsed interval', C2: 'Calendar-date difference', C3: 'Treatment-day number',
     C4: 'Bounded interval', C5: 'Anchor selection', C6: 'Reported timing comparison', C7: 'Recovery interval',
     Q1: 'Elimination and fractional persistence', Q2: 'Time to approach steady state',
     Q3: 'Accumulation during regular dosing', Q4: 'A change in clearance', Q5: 'Parent and metabolite persistence',
-    Q6: 'Biological replacement and recovery (teaching demonstration)', Q7: 'Long persistence of a monoclonal antibody',
+    Q6: 'Biological replacement, recovery or approach to a new level (teaching demonstration)', Q7: 'Long persistence of a monoclonal antibody',
     Q8: 'Parameter uncertainty and scenarios', Q9: 'Dose received before onset during an infusion',
     Q10: 'Cumulative dose normalized to body surface area', Q11: 'Estimated renal function (Cockcroft–Gault)'
   };
@@ -82,13 +97,13 @@
     C2: 'interval = onset date − anchor date, in calendar days',
     C3: 'treatment day = C2 + 1 (inclusive convention), only when C2 ≥ 0',
     C4: 'minimum = O_lower − A_upper; maximum = O_upper − A_lower, in calendar days',
-    C7: 'recovery interval = recovery milestone − cessation (C1 or C2)',
+    C7: 'recovery interval = recovery milestone − cessation (C1, C2 or C4 by the precision of the records)',
     Q1: 'k = ln 2 / t½; fraction remaining = 2^(−t / t½) = exp(−k × t)',
     Q2: 'n = −log2(1 − f); time = n × t½',
     Q3: 'R = 1 / (1 − 2^(−τ / t½))',
     Q4: 'half-life ratio = average Css ratio = CL_before / CL_after; with V: t½ = ln 2 × V / CL',
     Q5: 'parent and metabolite each: fraction = 2^(−t / t½), each normalized to its own starting value',
-    Q6: 'fraction replaced = 1 − 2^(−t / replacement half-time)',
+    Q6: 'fraction = 1 − 2^(−t / half-time): the fraction replaced, or the fraction of the change to a new level completed',
     Q7: 'fraction remaining = 2^(−t / t½), t and t½ in days',
     Q8: 'fraction at each bound = 2^(−t / t½_lower) and 2^(−t / t½_upper); no midpoint',
     Q9: 'amount = Σ rate × hours of each segment before onset',
@@ -116,7 +131,7 @@
   // ------------------------------------------------------------------ errors
   function CalcError(codes, details) {
     this.name = 'CalcError';
-    this.codes = Array.isArray(codes) ? codes : [codes];
+    this.codes = orderCodes(Array.isArray(codes) ? codes : [codes]);
     this.details = details || {};
     this.message = this.codes.join(', ');
   }
@@ -196,6 +211,8 @@
    *  {type:'date', date:'YYYY-MM-DD', original}
    *  {type:'partial', precision:'year'|'month'|'range', value:'YYYY'|'YYYY-MM', lower, upper, original}
    *  {type:'none', original}   (not recorded)
+   *  {type:'lab', last_normal_ref, first_abnormal_ref, original}   (event onset only; CALC-SPEC 1.1 C4: the onset lies
+   *     after the last normal test and on or before the first abnormal test; resolved by labOnsetTiming)
    */
   function timingFromIso(s) {
     var str = String(s);
@@ -215,6 +232,7 @@
       if (t.precision === 'range') return t.lower + '/' + t.upper;
       return String(t.value || '');
     }
+    if (t.type === 'lab') return 'after ' + (t.last_normal_ref || '?') + ', on or before ' + (t.first_abnormal_ref || '?');
     return '';
   }
 
@@ -254,6 +272,7 @@
       }
       return { kind: 'range', lo: lo, hi: hi, precision: p };
     }
+    if (t.type === 'lab') fail('E_MISSING_INPUT', label + ' (the dates of the last normal and first abnormal tests)');
     fail('E_MISSING_INPUT', label);
   }
   function dayBounds(r) { return r.kind === 'range' ? [r.lo, r.hi] : [r.day, r.day]; }
@@ -261,7 +280,33 @@
     if (!t || !t.type || t.type === 'none') return 'not recorded';
     if (t.type === 'timestamp') return /^unknown$/i.test(String(t.offset)) ? 'timestamp, offset unknown' : 'timestamp with UTC offset';
     if (t.type === 'date') return 'day';
+    if (t.type === 'lab') return 'laboratory-defined range';
+    if (t.lab) return 'laboratory-defined range';
     return t.precision || 'partial';
+  }
+  /**
+   * CALC-SPEC 1.1 C4 input rule: a laboratory-defined onset. Lower bound = date of the last normal test (earliest
+   * date when partial); upper bound = date of the first abnormal test (latest date when partial). Either test missing
+   * or undated: E_MISSING_INPUT. A last normal test after the first abnormal test: E_REVERSED_BOUNDS.
+   * Returns a partial-range Timing with lab: true. idx is from indexCase.
+   */
+  function labOnsetTiming(idx, t) {
+    var e = new Errs();
+    function get(ref, what) {
+      var k = String(ref == null ? '' : ref).trim();
+      if (!k) { e.add('E_MISSING_INPUT', 'the ' + what + ' (a dated test milestone)'); return null; }
+      var rec = idx.byId[k];
+      if (!rec || rec.kind !== 'milestone') { e.add('E_MISSING_INPUT', 'an existing milestone for the ' + what + ' (' + k + ')'); return null; }
+      var tt = rec.obj.timing;
+      if (!tt || !tt.type || tt.type === 'none') { e.add('E_MISSING_INPUT', 'the date of the ' + what + ' (' + k + ')'); return null; }
+      try { return resolveTiming(tt, 'the ' + what + ' (' + k + ')'); } catch (x) { e.absorb(x); return null; }
+    }
+    var n = get(t.last_normal_ref, 'last normal test'), a = get(t.first_abnormal_ref, 'first abnormal test');
+    e.raise();
+    var reversed = n.kind === 'ts' && a.kind === 'ts' ? compareInstant(n, a) > 0 : dayBounds(n)[0] > dayBounds(a)[1];
+    if (reversed) fail('E_REVERSED_BOUNDS');
+    return { type: 'partial', precision: 'range', lower: isoDay(dayBounds(n)[0]), upper: isoDay(dayBounds(a)[1]),
+      original: t.original || '', lab: true, last_normal_ref: String(t.last_normal_ref).trim(), first_abnormal_ref: String(t.first_abnormal_ref).trim() };
   }
 
   // ------------------------------------------------------------------ display (Section 7)
@@ -279,10 +324,16 @@
     parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
     return (neg ? MINUS : '') + parts.join('.');
   }
-  /** Percent to three significant figures: 12.5%, 0.391%, 63.0%. */
+  var SUP = { '-': '⁻', '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴', '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹' };
+  /** Percent to three significant figures: 12.5%, 0.391%, 63.0%; below 0.0001% in powers of ten (CALC-SPEC 1.1 Section 7). */
   function percent3(fraction) {
     var p = fraction * 100;
     if (p === 0) return '0%';
+    if (Math.abs(p) < 0.0001) {
+      var ex = p.toExponential(2).split('e');
+      var expo = String(+ex[1]).split('').map(function (ch) { return SUP[ch] || ch; }).join('');
+      return (p < 0 ? MINUS + ex[0].slice(1) : ex[0]) + ' × 10' + expo + '%';
+    }
     var mag = Math.floor(Math.log10(Math.abs(p)));
     var d = Math.max(0, 2 - mag), s = p.toFixed(d);
     var mag2 = Math.floor(Math.log10(Math.abs(parseFloat(s))));
@@ -306,6 +357,7 @@
   /** Human display of a Timing object, day month year (US spelling). */
   function fmtTiming(t) {
     if (!t || !t.type || t.type === 'none') return 'not recorded';
+    if (t.type === 'lab') return 'laboratory-defined: after the last normal test (' + (t.last_normal_ref || 'not chosen') + '), on or before the first abnormal test (' + (t.first_abnormal_ref || 'not chosen') + ')';
     try {
       if (t.type === 'timestamp') {
         var r = resolveTiming(t);
@@ -387,34 +439,48 @@
     return a.localMin - b.localMin;
   }
   /**
-   * C5 LAST_DOSE_BEFORE_ONSET: the latest administration at or before onset. An administration after
-   * onset is never selected; a same-date administration without times is selected with W_ADMIN_SAME_DATE_AS_ONSET.
-   * candidates: [{id, r (resolved timing)}]; onset: resolved timing.
+   * C5 LAST_DOSE_BEFORE_ONSET (CALC-SPEC 1.1 agreed rule).
+   * (1) Candidates with an exact date or timestamp only; a partial-date administration is never selected.
+   * (2) Position against the end point: two timestamps compare as instants (UTC when both offsets are known, else the
+   *     local clock); otherwise by date. Same date without both times: eligible with W_ADMIN_SAME_DATE_AS_ONSET.
+   * (3) The latest eligible candidate is selected (instants for two timestamps, otherwise the later date).
+   * (4) Blocked with E_MISSING_INPUT when no candidate is eligible, when another eligible candidate cannot be shown to be
+   *     earlier than the selected one, when any candidate's position relative to the end point is uncertain, or when a
+   *     partial-date candidate not wholly after the end point could fall on or after the selected candidate's date.
+   * candidates: [{id, r (resolved timing)}]; onset: resolved timing of the end point.
    */
   function selectLastDose(candidates, onset) {
-    var eligible = [], uncertain = [];
-    for (var i = 0; i < candidates.length; i++) {
-      var c = candidates[i], r = c.r, status;
-      if (r.kind === 'ts' && onset.kind === 'ts') status = compareInstant(r, onset) <= 0 ? 'before' : 'after';
-      else {
-        var ab = dayBounds(r), ob = dayBounds(onset);
-        if (ab[1] < ob[0]) status = 'before';
-        else if (ab[0] > ob[1]) status = 'after';
-        else if (ab[0] === ab[1] && ob[0] === ob[1]) status = 'same_date';
-        else status = 'uncertain';
-      }
-      if (status === 'before' || status === 'same_date') eligible.push({ c: c, status: status });
-      else if (status === 'uncertain') uncertain.push(c.id);
+    function position(r) {
+      if (r.kind === 'ts' && onset.kind === 'ts') return compareInstant(r, onset) <= 0 ? 'before' : 'after';
+      var ab = dayBounds(r), ob = dayBounds(onset);
+      if (ab[1] < ob[0]) return 'before';
+      if (ab[0] > ob[1]) return 'after';
+      if (ab[0] === ab[1] && ob[0] === ob[1]) return 'same_date';
+      return 'uncertain';
     }
-    if (!eligible.length) fail('E_MISSING_INPUT', 'an administration at or before onset');
-    function key(e) {
-      var r = e.c.r;
-      if (r.kind === 'ts') return r.day * 1440 + r.minuteOfDay;
-      return dayBounds(r)[1] * 1440;
+    function later(x, y) {          // x definitely later than y
+      if (x.kind === 'ts' && y.kind === 'ts') return compareInstant(x, y) > 0;
+      return dayBounds(x)[0] > dayBounds(y)[0];
     }
-    eligible.sort(function (x, y) { return key(y) - key(x); });
-    var chosen = eligible[0];
-    return { chosen: chosen.c, flags: chosen.status === 'same_date' ? ['W_ADMIN_SAME_DATE_AS_ONSET'] : [], uncertain: uncertain };
+    var eligible = [], uncertain = [], partialBefore = [];
+    candidates.forEach(function (c) {
+      var pos = position(c.r);
+      if (pos === 'after') return;
+      if (pos === 'uncertain') { uncertain.push(c.id); return; }
+      if (c.r.kind === 'range') { partialBefore.push(c); return; }
+      eligible.push({ c: c, status: pos });
+    });
+    if (uncertain.length) fail('E_MISSING_INPUT', 'the anchor record: ' + uncertain.join(', ') + ' may fall before or after the end point, so the last dose cannot be identified from the recorded dates');
+    if (!eligible.length) fail('E_MISSING_INPUT', 'the anchor record: no administration with an exact date is recorded at or before the end point');
+    var best = eligible[0];
+    eligible.slice(1).forEach(function (e) { if (later(e.c.r, best.c.r)) best = e; });
+    var ties = eligible.filter(function (e) { return e !== best && !later(best.c.r, e.c.r); }).map(function (e) { return e.c.id; });
+    if (ties.length) fail('E_MISSING_INPUT', 'the anchor record: the order of ' + best.c.id + ' and ' + ties.join(', ') + ' cannot be told from the recorded dates and times');
+    var bestDay = dayBounds(best.c.r)[0];
+    var blocking = partialBefore.filter(function (c) { return c.r.hi >= bestDay; }).map(function (c) { return c.id; });
+    if (blocking.length) fail('E_MISSING_INPUT', 'the anchor record: partial-date administration ' + blocking.join(', ') + ' could be the last dose before the end point');
+    return { chosen: best.c, flags: best.status === 'same_date' ? ['W_ADMIN_SAME_DATE_AS_ONSET'] : [], uncertain: [],
+      earlierPartial: partialBefore.map(function (c) { return c.id; }) };
   }
   /**
    * C6 reported timing comparison. result: interval result or null. reported: {text, lower, upper, unit}.
@@ -524,9 +590,15 @@
     timeUnit(e, inp.unit); positive(e, inp, 'replacement_half_time', 'the replacement half-time');
     if (req(e, inp, 't', 'the time') && inp.t < 0) e.add('E_OUT_OF_RANGE');
     if (inp.teaching_demonstration !== true) e.add('E_APPLICABILITY_UNCONFIRMED');
+    if (inp.use !== undefined && inp.use !== null && inp.use !== '' && Q6_USES.indexOf(inp.use) < 0) e.add('E_MISSING_INPUT', 'the use of Q6 (' + Q6_USES.join(' or ') + ')');
     e.raise();
-    return { out: { fraction_replaced: 1 - Math.pow(2, -inp.t / inp.replacement_half_time) }, flags: ['I_TEACHING_DEMONSTRATION'] };
+    // CALC-SPEC 1.1: two named uses, one formula. The use is required in the tools' forms; the version 1.0 vector V21
+    // carries no use and is read as replacement or recovery.
+    var v = 1 - Math.pow(2, -inp.t / inp.replacement_half_time);
+    var out = inp.use === 'approach to a new level' ? { fraction_of_change_completed: v } : { fraction_replaced: v };
+    return { out: out, flags: ['I_TEACHING_DEMONSTRATION'] };
   }
+  var Q6_USES = ['replacement or recovery', 'approach to a new level'];
   function q7(inp) {
     var e = new Errs();
     if (!inp.unit) e.add('E_MISSING_INPUT', 'a time unit'); else if (inp.unit !== 'days') e.add('E_INVALID_UNIT');
@@ -610,11 +682,35 @@
     }
     if (admins.length && known.length === 0 && !e.any()) e.add('E_MISSING_INPUT', 'the BSA recorded at one or more administrations');
     var methodB = inp.method_b ? (Array.isArray(inp.method_b) ? inp.method_b : [inp.method_b]) : [];
-    var bValues = [];
+    var bValues = [], orderNote = null;
+    // CALC-SPEC 1.1 agreed rule: Method B first and last are the earliest and latest administration by date.
+    // No date on any administration: the order entered is used and stated. Some dated, or a tie with different BSAs: blocked.
+    var wantsFirstLast = methodB.some(function (m) { return m === 'first' || m === 'last'; });
+    var firstIdx = 0, lastIdx = admins.length - 1, byDate = false;
+    if (wantsFirstLast && admins.length) {
+      var hasDate = function (a) { return a.date !== undefined && a.date !== null && String(a.date).trim() !== ''; };
+      var nDated = admins.filter(hasDate).length;
+      if (nDated > 0 && nDated < admins.length) e.add('E_MISSING_INPUT', 'the date of every administration (Method B by first or last administration)');
+      else if (nDated === admins.length) {
+        var days = admins.map(function (a) { try { return parseDateStr(a.date); } catch (x) { e.absorb(x); return null; } });
+        if (days.every(function (x) { return x !== null; })) {
+          byDate = true;
+          var dMin = Math.min.apply(null, days), dMax = Math.max.apply(null, days);
+          var pick = function (dd, which) {
+            var idxs = days.map(function (x, i) { return x === dd ? i : -1; }).filter(function (i) { return i >= 0; });
+            var bsas = idxs.map(function (i) { return admins[i].bsa_m2; });
+            if (bsas.some(function (x) { return x !== bsas[0]; })) { e.add('E_MISSING_INPUT', 'one BSA for the ' + which + ' administration: ' + idxs.length + ' administrations share its date with different BSAs'); return idxs[0]; }
+            return idxs[0];
+          };
+          firstIdx = pick(dMin, 'first'); lastIdx = pick(dMax, 'last');
+        }
+      } else orderNote = 'No administration date is recorded, so Method B takes the first and last administrations in the order entered.';
+      if (byDate) orderNote = 'Method B takes the first and last administrations by date (' + fmtDay(dMin) + ' and ' + fmtDay(dMax) + ').';
+    }
     for (var b = 0; b < methodB.length; b++) {
       var m = methodB[b];
       if (m === 'first' || m === 'last') {
-        var src = admins.length ? admins[m === 'first' ? 0 : admins.length - 1] : null;
+        var src = admins.length ? admins[m === 'first' ? firstIdx : lastIdx] : null;
         if (!src || !isNum(src.bsa_m2)) e.add('E_MISSING_INPUT', 'the ' + m + ' BSA for Method B');
         else if (src.bsa_m2 > 0) bValues.push({ key: m, bsa: src.bsa_m2 });
       } else if (isNum(m)) {
@@ -632,11 +728,11 @@
       out[v.key === 'first' ? 'single_bsa_first_mg_m2' : v.key === 'last' ? 'single_bsa_last_mg_m2' : 'single_bsa_stated_mg_m2'] = total / v.bsa;
       if (v.key === 'stated') out.stated_bsa_m2 = v.bsa;
     }
-    return { out: out, flags: flags };
+    return { out: out, flags: flags, note: orderNote };
   }
   function q11(inp) {
-    if (inp.creatinine_stable !== true) fail('E_CREATININE_STABILITY_UNCONFIRMED');
     var e = new Errs();
+    if (inp.creatinine_stable !== true) e.add('E_CREATININE_STABILITY_UNCONFIRMED');
     positive(e, inp, 'weight_kg', 'the weight');
     positive(e, inp, 'scr', 'the serum creatinine');
     if (req(e, inp, 'age', 'the age') && !(inp.age >= 18 && inp.age <= 120)) e.add('E_OUT_OF_RANGE');
@@ -663,7 +759,7 @@
 
   /** All records that can serve as an anchor or end point: exposure records and milestones. */
   function indexCase(c) {
-    var idx = { byId: {}, counts: {}, exposureOf: {} };
+    var idx = { byId: {}, counts: {}, exposureOf: {}, labOnset: {} };
     function reg(id, obj, kind) {
       var k = String(id == null ? '' : id).trim();
       idx.counts[k] = (idx.counts[k] || 0) + 1;
@@ -679,13 +775,37 @@
     (c.intervals || []).forEach(function (q) { reg(q.id, q, 'interval'); });
     (c.recoveries || []).forEach(function (q) { reg(q.id, q, 'recovery'); });
     (c.technical || []).forEach(function (q) { reg(q.id, q, 'technical'); });
+    // laboratory-defined onsets (CALC-SPEC 1.1 C4), derived once from their test milestones
+    (c.events || []).forEach(function (ev) {
+      if (ev.onset && ev.onset.type === 'lab') {
+        var k = String(ev.id == null ? '' : ev.id).trim();
+        try { idx.labOnset[k] = { t: labOnsetTiming(idx, ev.onset) }; } catch (x) { if (!(x instanceof CalcError)) throw x; idx.labOnset[k] = { err: x }; }
+      }
+    });
     return idx;
   }
+  /** The timing of a record as used for arithmetic; a laboratory-defined onset is returned as its derived range (may throw). */
   function timingOf(idx, id) {
-    var e = idx.byId[String(id).trim()];
+    var k = String(id).trim(), e = idx.byId[k];
     if (!e) return null;
-    if (e.kind === 'event') return e.obj.onset;
+    if (e.kind === 'event') {
+      if (e.obj.onset && e.obj.onset.type === 'lab') {
+        var lo = idx.labOnset[k] || { err: new CalcError(['E_MISSING_INPUT'], { E_MISSING_INPUT: 'the laboratory-defined onset' }) };
+        if (lo.err) throw lo.err;
+        return lo.t;
+      }
+      return e.obj.onset;
+    }
     return e.obj.timing;
+  }
+  /** Non-throwing variant for display: the derived lab-onset range, or the timing as entered. */
+  function displayTimingOf(idx, id) {
+    try { return timingOf(idx, id); } catch (x) { var e = idx.byId[String(id).trim()]; return e ? (e.kind === 'event' ? e.obj.onset : e.obj.timing) : null; }
+  }
+  /** Derived onset timing of an event of case c (laboratory-defined onsets resolved), for display. */
+  function eventOnset(c, ev) {
+    if (!ev || !ev.onset || ev.onset.type !== 'lab') return ev ? ev.onset : null;
+    return labOnsetTiming(indexCase(c), ev.onset);
   }
   function recordLabel(idx, id) {
     var e = idx.byId[String(id).trim()];
@@ -702,14 +822,20 @@
       if (k === '') issues.push({ code: 'E_MISSING_INPUT', where: 'identifiers', detail: 'an identifier for every record' });
       else if (idx.counts[k] > 1) issues.push({ code: 'E_DUPLICATE_ID', where: k, detail: k });
     });
+    function push(e, where) {
+      if (!(e instanceof CalcError)) throw e;
+      e.codes.forEach(function (code) { issues.push({ code: code, where: where, detail: e.details[code] }); });
+    }
     function chk(t, where) {
       if (!t || !t.type || t.type === 'none') return;
-      try { resolveTiming(t, where); } catch (e) {
-        if (!(e instanceof CalcError)) throw e;
-        e.codes.forEach(function (code) { issues.push({ code: code, where: where, detail: e.details[code] }); });
-      }
+      try { resolveTiming(t, where); } catch (e) { push(e, where); }
     }
-    (c.events || []).forEach(function (ev) { chk(ev.onset, (ev.id || '?') + ' onset'); });
+    (c.events || []).forEach(function (ev) {
+      if (ev.onset && ev.onset.type === 'lab') {
+        var lo = idx.labOnset[String(ev.id == null ? '' : ev.id).trim()];
+        if (lo && lo.err) push(lo.err, (ev.id || '?') + ' onset (laboratory-defined)');
+      } else chk(ev.onset, (ev.id || '?') + ' onset');
+    });
     (c.milestones || []).forEach(function (m) { chk(m.timing, (m.id || '?')); });
     (c.exposures || []).forEach(function (x) { (x.records || []).forEach(function (r) { chk(r.timing, (r.id || '?')); }); });
     (c.links || []).forEach(function (l) {
@@ -729,6 +855,7 @@
   function paramEntry(name, id, idx, t, extra) {
     var e = idx.byId[String(id).trim()], src = e ? (e.obj.source || '') : '';
     if (!src && e && e.kind === 'exposure_record') { var xo = idx.exposureOf[String(id).trim()]; src = xo ? (xo.source || '') : ''; }
+    if (t && t.lab) src = (src ? src + '; ' : '') + 'bounded by test records ' + t.last_normal_ref + ' (last normal) and ' + t.first_abnormal_ref + ' (first abnormal)';
     var p = { name: name, record_id: id, value: timingToIso(t), display: fmtTiming(t), unit: t && t.type === 'timestamp' ? 'timestamp' : 'date',
       precision: precisionLabel(t), original_text: (t && t.original) || '', Parameter_Status: 'case measurement', source: src };
     if (extra) for (var k in extra) p[k] = extra[k];
@@ -744,6 +871,7 @@
     for (var k in base) r[k] = base[k];
     return r;
   }
+  /** Add flags with their messages; QC_Flags and Messages are kept in the rule G9 order. */
   function addFlags(rec, codes, details) {
     for (var i = 0; i < codes.length; i++) {
       if (rec.QC_Flags.indexOf(codes[i]) < 0) {
@@ -751,6 +879,8 @@
         rec.Messages.push({ code: codes[i], type: flagType(codes[i]), message: message(codes[i], details && details[codes[i]]) });
       }
     }
+    rec.QC_Flags = orderCodes(rec.QC_Flags);
+    rec.Messages.sort(function (a, b) { return rec.QC_Flags.indexOf(a.code) - rec.QC_Flags.indexOf(b.code); });
     if (rec.QC_Flags.some(function (c) { return c.charAt(0) === 'E'; })) rec.Blocked = true;
   }
   function block(rec, err) {
@@ -772,66 +902,104 @@
     addFlags(rec, res.flags);
   }
   var C_LIMITATION = function (mode) {
-    return 'No mandatory text is defined for ' + mode + ' in CALC-SPEC 1.0. The interval describes sequence and spacing of recorded times; it is not evidence of causation.';
+    return C_LIMITATION_TEXT + (mode === 'C4' ? C4_LIMITATION_ADD : '');
   };
 
   function involvesDuplicate(idx, ids) {
     for (var i = 0; i < ids.length; i++) { var k = String(ids[i] == null ? '' : ids[i]).trim(); if (k && idx.counts[k] > 1) return true; }
     return false;
   }
+  function attemptInto(errs, fn) {
+    try { return fn(); } catch (x) { errs.absorb(x); return null; }
+  }
+  function labNote(t) {
+    return 'Onset is laboratory-defined (CALC-SPEC 1.1, C4): lower bound = date of the last normal test (' + t.last_normal_ref +
+      '), upper bound = date of the first abnormal test (' + t.first_abnormal_ref + '). The reviewer decides which results are normal.';
+  }
 
-  /** Evaluate one interval request (C1-C6 with C5 anchor selection). Returns one or more output records. */
+  /** Evaluate one interval request (C1-C6 with C5 anchor selection). Returns one or more output records.
+   *  CALC-SPEC 1.1 rule G9: every E-code that applies to the request's own inputs is collected and listed. */
   function evaluateInterval(c, q, idx) {
     idx = idx || indexCase(c);
     var rec = blankRecord({ Result_ID: q.id, Label: q.label || '', Exposure_Episode_ID: q.exposure_id || '', Event_ID: q.event_id || '',
       Anchor_Type: q.anchor_type || '', Anchor_Description: q.anchor_description || '' });
-    var out = [rec];
-    try {
-      if (!q.exposure_id) fail('E_MISSING_INPUT', 'a drug exposure episode');
-      if (!q.event_id) fail('E_MISSING_INPUT', 'an event episode');
-      var exE = idx.byId[String(q.exposure_id).trim()], evE = idx.byId[String(q.event_id).trim()];
-      if (!exE || exE.kind !== 'exposure') fail('E_MISSING_INPUT', 'an existing drug exposure episode');
-      if (!evE || evE.kind !== 'event') fail('E_MISSING_INPUT', 'an existing event episode');
-      var link = findLink(c, q.exposure_id, q.event_id);
-      if (!link) fail('E_MISSING_LINK');
-      rec.Drug_Event_Link = link.id;
-      var endRef = q.end_ref && q.end_ref !== 'onset' ? q.end_ref : q.event_id;
-      var endIsOnset = endRef === q.event_id;
-      rec.End_Point = endIsOnset ? 'onset of ' + (evE.obj.term || q.event_id) : recordLabel(idx, endRef);
-      if (!q.anchor_type || ANCHOR_TYPES.indexOf(q.anchor_type) < 0) fail('E_MISSING_INPUT', 'an anchor type');
-      if (q.anchor_type === 'OTHER' && !String(q.anchor_description || '').trim()) fail('E_MISSING_INPUT', 'a description of the OTHER anchor');
-      var endT = endIsOnset ? evE.obj.onset : timingOf(idx, endRef);
-      if (!idx.byId[String(endRef).trim()]) fail('E_MISSING_INPUT', 'an existing end-point record');
-      if (involvesDuplicate(idx, [q.exposure_id, q.event_id, endRef, q.anchor_ref])) fail('E_DUPLICATE_ID');
-      var endR = resolveTiming(endT, endIsOnset ? 'the onset' : 'the end point');
-      var exposure = exE.obj, anchorId = q.anchor_ref, anchorR, sel = null;
-      if (q.anchor_type === 'LAST_DOSE_BEFORE_ONSET' && !anchorId) {
+    var out = [rec], errs = new Errs(), exE = null, evE = null;
+    // link and episodes
+    if (!q.exposure_id) errs.add('E_MISSING_INPUT', 'a drug exposure episode');
+    else { exE = idx.byId[String(q.exposure_id).trim()]; if (!exE || exE.kind !== 'exposure') { errs.add('E_MISSING_INPUT', 'an existing drug exposure episode'); exE = null; } }
+    if (!q.event_id) errs.add('E_MISSING_INPUT', 'an event episode');
+    else { evE = idx.byId[String(q.event_id).trim()]; if (!evE || evE.kind !== 'event') { errs.add('E_MISSING_INPUT', 'an existing event episode'); evE = null; } }
+    if (exE && evE) { var link = findLink(c, q.exposure_id, q.event_id); if (!link) errs.add('E_MISSING_LINK'); else rec.Drug_Event_Link = link.id; }
+    // anchor type
+    var typeOk = !!q.anchor_type && ANCHOR_TYPES.indexOf(q.anchor_type) >= 0;
+    if (!typeOk) errs.add('E_MISSING_INPUT', 'an anchor type');
+    else if (q.anchor_type === 'OTHER' && !String(q.anchor_description || '').trim()) errs.add('E_MISSING_INPUT', 'a description of the OTHER anchor');
+    // end point
+    var endRef = q.end_ref && q.end_ref !== 'onset' ? q.end_ref : q.event_id;
+    var endIsOnset = endRef === q.event_id, endT = null, endR = null;
+    if (involvesDuplicate(idx, [q.exposure_id, q.event_id, endRef, q.anchor_ref])) errs.add('E_DUPLICATE_ID');
+    if (endIsOnset) {
+      if (evE) {
+        rec.End_Point = 'onset of ' + (evE.obj.term || q.event_id);
+        endT = attemptInto(errs, function () { return timingOf(idx, q.event_id); });
+        if (endT) endR = attemptInto(errs, function () { return resolveTiming(endT, 'the onset'); });
+      }
+    } else if (!idx.byId[String(endRef).trim()]) errs.add('E_MISSING_INPUT', 'an existing end-point record');
+    else {
+      rec.End_Point = recordLabel(idx, endRef);
+      endT = attemptInto(errs, function () { return timingOf(idx, endRef); });
+      if (endT) endR = attemptInto(errs, function () { return resolveTiming(endT, 'the end point'); });
+    }
+    // anchor
+    var anchorId = q.anchor_ref, anchorR = null, sel = null;
+    if (typeOk && q.anchor_type === 'LAST_DOSE_BEFORE_ONSET' && !anchorId) {
+      if (exE) {
         var cands = [];
-        (exposure.records || []).forEach(function (r) {
+        (exE.obj.records || []).forEach(function (r) {
           if (['start', 'administration', 'restart', 'dose_change'].indexOf(r.kind) >= 0 && r.timing && r.timing.type && r.timing.type !== 'none') {
-            cands.push({ id: r.id, r: resolveTiming(r.timing, r.id) });
+            var rr = attemptInto(errs, function () { return resolveTiming(r.timing, r.id); });
+            if (rr) cands.push({ id: r.id, r: rr });
           }
         });
-        if (!cands.length) fail('E_MISSING_INPUT', 'an administration record (last dose before onset)');
-        sel = selectLastDose(cands, endR);
-        anchorId = sel.chosen.id; anchorR = sel.chosen.r;
-        rec.Assumptions.push('Anchor selected under C5: latest administration at or before ' + (endIsOnset ? 'onset' : 'the end point') + ' (' + anchorId + '); later administrations are never selected.');
-        if (sel.uncertain.length) rec.Assumptions.push('Not selected because their order relative to onset is uncertain: ' + sel.uncertain.join(', ') + '.');
-      } else if (q.anchor_type === 'FIRST_ADMIN' && !anchorId) {
-        var starts = (exposure.records || []).filter(function (r) { return r.kind === 'start'; });
-        if (!starts.length) fail('E_MISSING_INPUT', 'the first administration');
-        var best = null;
-        starts.forEach(function (r) { var rr = resolveTiming(r.timing, r.id); var lo = dayBounds(rr)[0]; if (!best || lo < best.lo) best = { id: r.id, r: rr, lo: lo }; });
-        anchorId = best.id; anchorR = best.r;
-      } else {
-        if (!anchorId) fail('E_MISSING_INPUT', 'the anchor record');
-        if (!idx.byId[String(anchorId).trim()]) fail('E_MISSING_INPUT', 'an existing anchor record');
-        anchorR = resolveTiming(timingOf(idx, anchorId), 'the anchor');
+        if (!cands.length) errs.add('E_MISSING_INPUT', 'an administration record (last dose before onset)');
+        else if (endR) {
+          sel = attemptInto(errs, function () { return selectLastDose(cands, endR); });
+          if (sel) { anchorId = sel.chosen.id; anchorR = sel.chosen.r; }
+        }
       }
+    } else if (typeOk && q.anchor_type === 'FIRST_ADMIN' && !anchorId) {
+      if (exE) {
+        var starts = (exE.obj.records || []).filter(function (r) { return r.kind === 'start'; });
+        if (!starts.length) errs.add('E_MISSING_INPUT', 'the first administration');
+        var best = null;
+        starts.forEach(function (r) {
+          var rr = attemptInto(errs, function () { return resolveTiming(r.timing, r.id); });
+          if (rr) { var lo = dayBounds(rr)[0]; if (!best || lo < best.lo) best = { id: r.id, r: rr, lo: lo }; }
+        });
+        if (best) { anchorId = best.id; anchorR = best.r; }
+      }
+    } else if (typeOk) {
+      if (!anchorId) errs.add('E_MISSING_INPUT', 'the anchor record');
+      else if (!idx.byId[String(anchorId).trim()]) errs.add('E_MISSING_INPUT', 'an existing anchor record');
+      else anchorR = attemptInto(errs, function () { return resolveTiming(timingOf(idx, anchorId), 'the anchor'); });
+    }
+    if (errs.any()) {
+      block(rec, new CalcError(errs.codes, errs.details));
+      if (!rec.Label) rec.Label = q.label || ('Interval ' + q.id);
+      rec.Calculation_Mode = rec.Calculation_Mode || 'C1–C6';
+      return out;
+    }
+    try {
       rec.Anchor_Record_ID = anchorId;
+      if (sel) {
+        rec.Assumptions.push('Anchor selected under C5 (CALC-SPEC 1.1): latest administration with an exact date or time at or before ' + (endIsOnset ? 'onset' : 'the end point') +
+          ' (' + anchorId + '), ordered in UTC when offsets are known; later administrations are never selected.');
+        if (sel.earlierPartial.length) rec.Assumptions.push('Partial-date administrations wholly before the selected one were not candidates: ' + sel.earlierPartial.join(', ') + '.');
+      }
       var anchorT = timingOf(idx, anchorId);
       rec.Parameter_Set.push(paramEntry('Anchor (' + q.anchor_type + ')', anchorId, idx, anchorT, { label: recordLabel(idx, anchorId) }));
       rec.Parameter_Set.push(paramEntry('End point', endRef, idx, endT, { label: endIsOnset ? 'onset' : recordLabel(idx, endRef) }));
+      if (endT && endT.lab) rec.Assumptions.push(labNote(endT));
       if (!rec.Label) rec.Label = recordLabel(idx, anchorId) + ' → ' + (endIsOnset ? (evE.obj.term || q.event_id) + ' onset' : recordLabel(idx, endRef));
       var res = computeInterval(anchorR, endR);
       fillInterval(rec, res);
@@ -871,12 +1039,16 @@
           Exposure_Episode_ID: rec.Exposure_Episode_ID, Event_ID: rec.Event_ID, End_Point: rec.End_Point,
           Anchor_Type: rec.Anchor_Type, Anchor_Record_ID: rec.Anchor_Record_ID, Anchor_Description: rec.Anchor_Description,
           Parameter_Set: clone(rec.Parameter_Set), Constraint_Source: q.constraint.source || '' });
-        try {
-          if (!String(q.constraint.source || '').trim()) fail('E_MISSING_INPUT', 'the source of the constraint');
-          var ab = dayBounds(anchorR), ob = dayBounds(endR), cl = q.constraint.lower ? parseDateStr(q.constraint.lower) : null,
-            cu = q.constraint.upper ? parseDateStr(q.constraint.upper) : null, tgt = q.constraint.target === 'anchor' ? ab : ob;
-          if (cl !== null) tgt[0] = Math.max(tgt[0], cl);
-          if (cu !== null) tgt[1] = Math.min(tgt[1], cu);
+        var e3 = new Errs();
+        if (!String(q.constraint.source || '').trim()) e3.add('E_MISSING_INPUT', 'the source of the constraint');
+        var ab = dayBounds(anchorR), ob = dayBounds(endR), tgt = q.constraint.target === 'anchor' ? ab : ob;
+        var cl = q.constraint.lower ? attemptInto(e3, function () { return parseDateStr(q.constraint.lower); }) : null;
+        var cu = q.constraint.upper ? attemptInto(e3, function () { return parseDateStr(q.constraint.upper); }) : null;
+        if (cl !== null) tgt[0] = Math.max(tgt[0], cl);
+        if (cu !== null) tgt[1] = Math.min(tgt[1], cu);
+        if (tgt[0] > tgt[1]) e3.add('E_REVERSED_BOUNDS');
+        if (e3.any()) block(r3, new CalcError(e3.codes, e3.details));
+        else {
           var res3 = c4Bounded(ab[0], ab[1], ob[0], ob[1]);
           fillInterval(r3, res3);
           r3.Calculation_Mode = 'C4 (constrained)';
@@ -884,7 +1056,7 @@
             (cl !== null ? 'not before ' + fmtDay(cl) : '') + (cl !== null && cu !== null ? ', ' : '') + (cu !== null ? 'not after ' + fmtDay(cu) : '') +
             '. Source: ' + q.constraint.source + '. Constrained bounds: ' + fmtRangeDays(tgt[0], tgt[1]) + '.');
           r3.Limitations = C_LIMITATION('C4');
-        } catch (e3) { block(r3, e3); }
+        }
         out.push(r3);
       }
     } catch (err) {
@@ -895,23 +1067,38 @@
     return out;
   }
 
-  /** C7 recovery interval: CESSATION to a recovery milestone, with W_INTERVENTION_BEFORE_RECOVERY. */
+  /**
+   * C7 recovery interval (CALC-SPEC 1.1): CESSATION to a recovery milestone, by C1, C2 or C4.
+   * Only milestones recorded as interventions count; nothing is inferred from other records. A recorded intervention
+   * counts when it can lie between cessation and recovery, ends included (instants when all three are timestamps,
+   * compared in UTC when both offsets are known; otherwise by date bounds overlap).
+   */
   function evaluateRecovery(c, q, idx) {
     idx = idx || indexCase(c);
     var rec = blankRecord({ Result_ID: q.id, Label: q.label || '', Exposure_Episode_ID: q.exposure_id || '', Event_ID: q.event_id || '',
       Anchor_Type: 'CESSATION', Calculation_Mode: 'C7' });
+    var errs = new Errs(), cR = null, rR = null, cT = null, rT = null;
+    if (!q.exposure_id || !q.event_id) errs.add('E_MISSING_INPUT', 'a drug exposure episode and an event episode');
+    else { var link = findLink(c, q.exposure_id, q.event_id); if (!link) errs.add('E_MISSING_LINK'); else rec.Drug_Event_Link = link.id; }
+    if (!q.cessation_ref) errs.add('E_MISSING_INPUT', 'the cessation record');
+    else if (!idx.byId[String(q.cessation_ref).trim()]) errs.add('E_MISSING_INPUT', 'an existing cessation record');
+    else { cT = attemptInto(errs, function () { return timingOf(idx, q.cessation_ref); }); if (cT) cR = attemptInto(errs, function () { return resolveTiming(cT, 'the cessation'); }); }
+    if (!q.recovery_ref) errs.add('E_MISSING_INPUT', 'the recovery milestone');
+    else if (!idx.byId[String(q.recovery_ref).trim()]) errs.add('E_MISSING_INPUT', 'an existing recovery milestone');
+    else { rT = attemptInto(errs, function () { return timingOf(idx, q.recovery_ref); }); if (rT) rR = attemptInto(errs, function () { return resolveTiming(rT, 'the recovery milestone'); }); }
+    if (involvesDuplicate(idx, [q.exposure_id, q.event_id, q.cessation_ref, q.recovery_ref])) errs.add('E_DUPLICATE_ID');
+    // recorded interventions: an invalid or incomplete date blocks; an undated one is noted
+    var interventions = [], undated = [];
+    (c.milestones || []).filter(function (m) { return m.kind === 'intervention'; }).forEach(function (m) {
+      if (!m.timing || !m.timing.type || m.timing.type === 'none') { undated.push(m.id + (m.label ? ' (' + m.label + ')' : '')); return; }
+      var x = attemptInto(errs, function () { return resolveTiming(m.timing, 'intervention ' + m.id); });
+      if (x) interventions.push({ id: m.id, label: m.label, r: x });
+    });
+    if (errs.any()) {
+      block(rec, new CalcError(errs.codes, errs.details)); if (!rec.Label) rec.Label = q.label || ('Recovery ' + q.id);
+      return [rec];
+    }
     try {
-      var link = findLink(c, q.exposure_id, q.event_id);
-      if (!q.exposure_id || !q.event_id) fail('E_MISSING_INPUT', 'a drug exposure episode and an event episode');
-      if (!link) fail('E_MISSING_LINK');
-      rec.Drug_Event_Link = link.id;
-      if (!q.cessation_ref) fail('E_MISSING_INPUT', 'the cessation record');
-      if (!q.recovery_ref) fail('E_MISSING_INPUT', 'the recovery milestone');
-      if (!idx.byId[String(q.cessation_ref).trim()]) fail('E_MISSING_INPUT', 'an existing cessation record');
-      if (!idx.byId[String(q.recovery_ref).trim()]) fail('E_MISSING_INPUT', 'an existing recovery milestone');
-      if (involvesDuplicate(idx, [q.exposure_id, q.event_id, q.cessation_ref, q.recovery_ref])) fail('E_DUPLICATE_ID');
-      var cT = timingOf(idx, q.cessation_ref), rT = timingOf(idx, q.recovery_ref);
-      var cR = resolveTiming(cT, 'the cessation'), rR = resolveTiming(rT, 'the recovery milestone');
       rec.Anchor_Record_ID = q.cessation_ref;
       rec.End_Point = recordLabel(idx, q.recovery_ref);
       if (!rec.Label) rec.Label = recordLabel(idx, q.cessation_ref) + ' → ' + recordLabel(idx, q.recovery_ref) + ' (recovery)';
@@ -919,26 +1106,33 @@
       rec.Parameter_Set.push(paramEntry('Recovery milestone', q.recovery_ref, idx, rT, { label: recordLabel(idx, q.recovery_ref) }));
       var res = computeInterval(cR, rR);
       fillInterval(rec, res);
-      rec.Calculation_Mode = 'C7';
+      rec.Calculation_Mode = 'C7 (' + res.mode + ')';
       rec.Equation = EQUATIONS.C7 + ' (' + res.mode + ': ' + EQUATIONS[res.mode] + ')';
       rec.Assumptions.unshift('Recovery interval (C7) computed with ' + res.mode + '.');
-      // interventions recorded between cessation and recovery
-      var found = [];
-      var cands = (c.milestones || []).filter(function (m) { return m.kind === 'intervention'; }).map(function (m) { return { id: m.id, t: m.timing, label: m.label }; });
-      (c.exposures || []).forEach(function (x) {
-        if (x.role === 'treatment of the event') (x.records || []).forEach(function (r) { if (r.kind === 'start' || r.kind === 'administration') cands.push({ id: r.id, t: r.timing, label: x.drug }); });
-      });
-      cands.forEach(function (m) {
-        if (!m.t || !m.t.type || m.t.type === 'none') return;
-        var x; try { x = resolveTiming(m.t); } catch (e) { return; }
-        var between;
-        if (cR.kind === 'ts' && rR.kind === 'ts' && x.kind === 'ts') between = compareInstant(x, cR) >= 0 && compareInstant(x, rR) <= 0;
-        else { var xb = dayBounds(x), cb = dayBounds(cR), rb = dayBounds(rR); between = xb[1] >= cb[0] && xb[0] <= rb[1]; }
-        if (between) found.push(m.id + (m.label ? ' (' + m.label + ')' : ''));
-      });
-      if (found.length) { addFlags(rec, ['W_INTERVENTION_BEFORE_RECOVERY']); rec.Assumptions.push('Intervention recorded between cessation and recovery: ' + found.join('; ') + '.'); }
+      function inWindow(x) {
+        if (cR.kind === 'ts' && rR.kind === 'ts' && x.kind === 'ts') return compareInstant(x, cR) >= 0 && compareInstant(x, rR) <= 0;
+        var xb = dayBounds(x), cb = dayBounds(cR), rb = dayBounds(rR);
+        return xb[1] >= cb[0] && xb[0] <= rb[1];
+      }
+      var counted = interventions.filter(function (m) { return inWindow(m.r); });
+      rec.Interventions_Counted = counted.map(function (m) { return m.id; });
+      var found = counted.map(function (m) { return m.id + (m.label ? ' (' + m.label + ')' : ''); });
+      if (found.length) { addFlags(rec, ['W_INTERVENTION_BEFORE_RECOVERY']); rec.Assumptions.push('Intervention recorded between cessation and recovery (ends included): ' + found.join('; ') + '.'); }
       else rec.Assumptions.push('No intervention is recorded between cessation and recovery; absence of a record is not evidence that none was given.');
-      rec.Limitations = 'No mandatory text is defined for C7 in CALC-SPEC 1.0, and C7 has no verification vector yet; check the result by hand. A recovery interval is not, by itself, evidence of positive dechallenge.';
+      if (undated.length) rec.Assumptions.push('Intervention recorded without a date, so whether it came before recovery is unknown: ' + undated.join('; ') + '.');
+      // never inferred (CALC-SPEC 1.1): exposures whose role is treatment of the event are pointed out, not counted
+      var notCounted = [];
+      (c.exposures || []).forEach(function (x) {
+        if (x.role !== 'treatment of the event') return;
+        (x.records || []).forEach(function (r) {
+          if (r.kind !== 'start' && r.kind !== 'administration') return;
+          var rr; try { rr = resolveTiming(r.timing); } catch (e) { return; }
+          if (inWindow(rr)) notCounted.push(r.id + ' (' + (x.drug || x.id) + ')');
+        });
+      });
+      if (notCounted.length) rec.Assumptions.push('Not counted as interventions, because they are recorded as exposures rather than as intervention milestones (nothing is inferred): ' +
+        notCounted.join('; ') + '. If treatment was given, record it as an intervention milestone.');
+      rec.Limitations = C_LIMITATION(res.mode) + C7_LIMITATION_ADD;
     } catch (err) {
       block(rec, err); if (!rec.Label) rec.Label = q.label || ('Recovery ' + q.id);
     }
@@ -995,7 +1189,12 @@
     if (rule === 'Q7') e.unit = 'days';
     if (rule === 'Q4') { e.cl_unit = inp.cl_unit; e.volume_unit = 'L'; }
     if (rule === 'Q8') e.antibody = inp.antibody === true;
-    if (rule === 'Q6') e.teaching_demonstration = entry.teaching_demonstration === true;
+    if (rule === 'Q6') {
+      e.teaching_demonstration = entry.teaching_demonstration === true;
+      if (!inp.use) pre.add('E_MISSING_INPUT', 'the use of Q6 (replacement or recovery, or approach to a new level)');
+      e.use = inp.use || undefined;
+      rec.Parameter_Set.push({ name: 'Use (CALC-SPEC 1.1 Q6)', key: 'use', value: inp.use || '', unit: '', Parameter_Status: '', source: '' });
+    }
     if (rule === 'Q9') {
       e.segments = (inp.segments || []).map(function (s) {
         var r = toNumber(s.rate); if (typeof r === 'string') { pre.add('E_MISSING_INPUT', 'the segment rate as a number'); r = null; }
@@ -1016,10 +1215,11 @@
         var d = toNumber(a.dose), b = toNumber(a.bsa);
         if (typeof d === 'string') { pre.add('E_MISSING_INPUT', 'dose ' + (i + 1) + ' as a number'); d = null; }
         if (typeof b === 'string') { pre.add('E_MISSING_INPUT', 'BSA ' + (i + 1) + ' as a number'); b = null; }
-        rec.Parameter_Set.push({ name: 'Administration ' + (i + 1), key: 'admin_' + (i + 1), value: (d === null ? '' : d) + ' ' + (a.dose_unit || '(unit not recorded)') + ' at BSA ' + (b === null ? 'not recorded' : b + ' m²'),
+        rec.Parameter_Set.push({ name: 'Administration ' + (i + 1), key: 'admin_' + (i + 1), value: (a.date ? fmtDateStr(a.date) + ': ' : '') + (d === null ? '' : d) + ' ' + (a.dose_unit || '(unit not recorded)') + ' at BSA ' + (b === null ? 'not recorded' : b + ' m² (recorded)'),
           unit: (a.dose_unit || '') + '; m²', Parameter_Status: (meta.administrations || {}).status || '', source: (meta.administrations || {}).source || '' });
-        return { dose_mg: d, dose_unit: a.dose_unit === undefined ? '' : a.dose_unit, bsa_m2: b };
+        return { dose_mg: d, dose_unit: a.dose_unit === undefined ? '' : a.dose_unit, bsa_m2: b, date: a.date || '' };
       });
+      rec.Assumptions.push('BSA is the value recorded at each administration; the tool never calculates BSA (CALC-SPEC 1.1, Q10).');
       if (inp.method_b === 'first' || inp.method_b === 'last') e.method_b = inp.method_b;
       else if (inp.method_b === 'stated') { var sb = toNumber(inp.method_b_bsa); e.method_b = typeof sb === 'string' || sb === null ? '' : sb; if (sb === null || typeof sb === 'string') pre.add('E_MISSING_INPUT', 'the stated BSA for Method B'); }
     }
@@ -1032,26 +1232,31 @@
       rec.Assumptions.push(entry.creatinine_stable === true ? 'Stable creatinine confirmed by the reviewer' + (entry.stability_basis ? ': ' + entry.stability_basis : '.') : 'Creatinine stability not confirmed.');
     }
     // gates
+    // CALC-SPEC 1.1 common gate: confirmed only when all four confirmations are given and every detail is present.
+    // Each blank detail or missing Parameter_Status raises E_MISSING_INPUT; an unconfirmed gate raises
+    // E_APPLICABILITY_UNCONFIRMED; both are listed (rule G9; vector V36).
     if (COMMON_GATE_RULES.indexOf(rule) >= 0) {
       var allTicked = gate.model === true && gate.half_life === true && gate.reference === true && gate.status === true;
-      if (allTicked) {
-        var hlName = rule === 'Q4' ? 'the parameters used' : 'the half-life used';
-        if (!String(gate.half_life_type || '').trim()) pre.add('E_MISSING_INPUT', 'the type of ' + hlName);
-        if (!String(gate.half_life_population || '').trim()) pre.add('E_MISSING_INPUT', 'the population of ' + hlName);
-        if (!String(gate.half_life_source || '').trim()) pre.add('E_MISSING_INPUT', 'the source of ' + hlName);
-        if (!String(gate.reference_text || '').trim()) pre.add('E_MISSING_INPUT', 'the reference time');
-        (Q_PARAMS[rule] || []).forEach(function (p) {
-          var v = inp[p.key]; if (p.optional && (v === '' || v === null || v === undefined)) return;
-          if (!(meta[p.key] || {}).status) pre.add('E_MISSING_INPUT', 'the Parameter_Status of ' + p.label.toLowerCase());
-        });
-        e.applicability_confirmed = true;
+      var hlName = rule === 'Q4' ? 'the parameters used' : 'the half-life used', blanks = 0;
+      var need = function (v, label) { if (!String(v == null ? '' : v).trim()) { pre.add('E_MISSING_INPUT', label); blanks++; } };
+      need(gate.half_life_type, 'the type of ' + hlName);
+      need(gate.half_life_population, 'the population of ' + hlName);
+      need(gate.half_life_source, 'the source of ' + hlName);
+      need(gate.reference_text, 'the reference time');
+      (Q_PARAMS[rule] || []).forEach(function (p) {
+        var v = inp[p.key]; if (p.optional && (v === '' || v === null || v === undefined)) return;
+        need((meta[p.key] || {}).status, 'the Parameter_Status of ' + p.label.toLowerCase());
+      });
+      e.applicability_confirmed = allTicked && blanks === 0;
+      if (e.applicability_confirmed) {
         rec.Assumptions.push('Gate confirmed: the simple model applies (one compartment, linear first-order elimination, constant parameters over the period).');
         rec.Assumptions.push('Gate confirmed: ' + hlName + ' – type: ' + (gate.half_life_type || '') + '; population: ' + (gate.half_life_population || '') + '; source: ' + (gate.half_life_source || '') + '.');
         rec.Assumptions.push('Gate confirmed: reference time – ' + (gate.reference_text || '') + '.');
         rec.Assumptions.push('Gate confirmed: each input’s Parameter_Status is recorded.');
       } else {
-        e.applicability_confirmed = false;
-        rec.Assumptions.push('Common gate not confirmed.');
+        rec.Assumptions.push('Common gate not confirmed' + (allTicked ? ': a gate detail or a Parameter_Status is blank.' : ': ' +
+          [gate.model !== true ? 'model' : '', gate.half_life !== true ? 'half-life used' : '', gate.reference !== true ? 'reference time' : '', gate.status !== true ? 'Parameter_Status' : '']
+            .filter(Boolean).join(', ') + ' not confirmed.'));
       }
     }
     if (rule === 'Q6') rec.Assumptions.push(entry.teaching_demonstration === true ? 'Teaching-demonstration switch on.' : 'Teaching-demonstration switch off.');
@@ -1064,6 +1269,7 @@
       catch (x) { if (!(x instanceof CalcError)) throw x; pre.absorb(x); }
       pre.raise();
       addFlags(rec, res.flags);
+      if (res.note) rec.Assumptions.push(res.note);
       rec.Results = technicalResults(rule, res.out, e);
       rec.Display = rec.Results.map(function (r) { return r.name + ': ' + r.display; }).join('; ');
       rec.Unit = rec.Results.length ? rec.Results[0].unit : '';
@@ -1102,7 +1308,9 @@
         add('Metabolite remaining (own reference)', o.metabolite_percent_remaining, percent3(o.metabolite_percent_remaining / 100), 'percent', 'metabolite_percent_remaining');
         break;
       case 'Q6':
-        add('Fraction replaced', o.fraction_replaced, percent3(o.fraction_replaced), 'fraction (shown as percent)', 'fraction_replaced'); break;
+        if (o.fraction_of_change_completed !== undefined) add('Fraction of the change to the new level completed', o.fraction_of_change_completed, percent3(o.fraction_of_change_completed), 'fraction (shown as percent)', 'fraction_of_change_completed');
+        else add('Fraction replaced', o.fraction_replaced, percent3(o.fraction_replaced), 'fraction (shown as percent)', 'fraction_replaced');
+        break;
       case 'Q7':
         add('Fraction remaining', o.fraction_remaining, percent3(o.fraction_remaining), 'fraction (shown as percent)', 'fraction_remaining');
         add('Elimination rate constant k', o.k_per_unit, sig3(o.k_per_unit) + ' per day', 'per day', 'k');
@@ -1340,7 +1548,9 @@
     MESSAGES: MESSAGES, MANDATORY_TEXT: MANDATORY_TEXT, RULE_TITLES: RULE_TITLES, EQUATIONS: EQUATIONS,
     ANCHOR_TYPES: ANCHOR_TYPES, SEQUENCE_STATUSES: SEQUENCE_STATUSES, PARAMETER_STATUSES: PARAMETER_STATUSES,
     TIME_UNITS: TIME_UNITS, REPORTED_UNITS: REPORTED_UNITS, CLEARANCE_UNITS: CLEARANCE_UNITS, SCR_UNITS: SCR_UNITS,
-    Q_PARAMS: Q_PARAMS, COMMON_GATE_RULES: COMMON_GATE_RULES, CSV_FIELDS: CSV_FIELDS,
+    Q_PARAMS: Q_PARAMS, COMMON_GATE_RULES: COMMON_GATE_RULES, CSV_FIELDS: CSV_FIELDS, Q6_USES: Q6_USES,
+    FLAG_ORDER: FLAG_ORDER, orderCodes: orderCodes, labOnsetTiming: labOnsetTiming, eventOnset: eventOnset, timingOf: timingOf,
+    displayTimingOf: displayTimingOf,
     CalcError: CalcError, flagType: flagType, message: message,
     parseDateStr: parseDateStr, parseTimeStr: parseTimeStr, parseOffset: parseOffset, timingFromIso: timingFromIso,
     timingToIso: timingToIso, resolveTiming: resolveTiming, dayBounds: dayBounds, isoDay: isoDay, dayNumber: dayNumber,
