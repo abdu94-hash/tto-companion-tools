@@ -1,8 +1,8 @@
-"""Capture the values computed by the independent Python reference check (tto_calc_reference_check.py)
+"""Capture the values computed by the independent Python reference check (tto_calc_reference_check_v1.1.py for CALC-SPEC 1.1)
 for every numeric vector, so tests/run_vectors.js can confirm that the JavaScript engine and the
 reference agree value by value, not only on PASS/FAIL.
 
-Usage: python python_reference_capture.py <tto_calc_reference_check.py> <tto_calc_test_vectors_v1.0.json>
+Usage: python python_reference_capture.py <tto_calc_reference_check_v1.1.py> <tto_calc_test_vectors_v1.1.json>
 Prints JSON: {"V01": [[got, want], ...], ...} in the order the reference compares them.
 The reference script itself is not modified; its comparison function is wrapped while it runs.
 """

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * TTO Companion Tools v1.0 - checks that the three fictional example cases loaded by the calculator
+ * TTO Companion Tools v1.1 - checks that the three fictional example cases loaded by the calculator
  * reproduce the numbers printed in their home chapters.
  *   C01 version 2: Chapter 3, Section 3.7 (Tables 5 and 8) and Chapter 24, Worked exercises 24.1 and 24.5(a)
  *   C04 version 2: Chapter 11, Section 11.8 (and Chapter 23, Section 23.11 for LAST_DOSE and the Q8 rows)
@@ -65,6 +65,13 @@ interval(ev, 'I5', { label: 'Skin antiseptic (OTHER)', value: 60, unit: 'minutes
 interval(ev, 'I6', { label: 'Drug A stopped (CESSATION)', value: -1, unit: 'minutes', seq: 'BEFORE', display: '−1 minute' });
 interval(ev, 'R1', { label: 'recovery, stop to improvement (C7)', value: 19, unit: 'minutes', flags: ['W_INTERVENTION_BEFORE_RECOVERY'] });
 technical(ev, 'T1', { label: 'Q9 with a rate in mL/hour', blocked: ['E_INVALID_UNIT'] });
+check('R1 Calculation_Mode is "C7 (C1)" and names MS-RX (CALC-SPEC 1.1)', rec(ev, 'R1').Calculation_Mode === 'C7 (C1)' && JSON.stringify(rec(ev, 'R1').Interventions_Counted) === '["MS-RX"]');
+// CALC-SPEC 1.1: a treatment exposure that is not recorded as an intervention milestone is never counted (V30)
+c = E.clone(X.cases.C01); c.milestones = c.milestones.filter((m) => m.id !== 'MS-RX');
+c.exposures.push({ id: 'EX-TX', drug: 'Rescue medicine', role: 'treatment of the event', records: [{ id: 'TX-1', kind: 'start', label: 'Given', timing: { type: 'timestamp', date: '2026-01-10', time: '09:18', offset: '-05:00', original: '09:18' } }] });
+ev = E.evaluateCase(c);
+check('R1 without the intervention milestone: no W_INTERVENTION_BEFORE_RECOVERY; TX-1 pointed out, not counted', !rec(ev, 'R1').Blocked && flags(rec(ev, 'R1')) === '[]' && rec(ev, 'R1').Assumptions.some((a) => /Not counted as interventions.*TX-1/.test(a)));
+c = E.clone(X.cases.C01);
 // Worked exercise 24.1: offset left unknown
 c = E.clone(X.cases.C01);
 c.exposures[0].records[0].timing.offset = 'unknown'; c.events[0].onset.offset = 'unknown';
@@ -85,6 +92,7 @@ interval(ev, 'I4', { label: 'LAST_DOSE_BEFORE_ONSET (Chapter 23)', value: 1, uni
 interval(ev, 'I5', { label: 'last dose to digoxin sample (C1, local clock)', value: 1660, unit: 'minutes (local clock)', flags: ['W_TZ_UNKNOWN'], display: '1,660 minutes (local clock)' });
 check('I5 derived display about 27.7 hours', rec(ev, 'I5').Derived_Displays.hours === '27.7 hours');
 interval(ev, 'R1', { label: 'recovery, withholding to improvement (C7)', value: 3, unit: 'calendar days', flags: ['W_INTERVENTION_BEFORE_RECOVERY'] });
+check('R1 Calculation_Mode is "C7 (C2)" and names MS-FLU (CALC-SPEC 1.1)', rec(ev, 'R1').Calculation_Mode === 'C7 (C2)' && JSON.stringify(rec(ev, 'R1').Interventions_Counted) === '["MS-FLU"]');
 technical(ev, 'T1', { label: 'Q11 baseline, female 81 y, 58 kg, 1.0 mg/dL', values: [['crcl_ml_min', (140 - 81) * 58 / 72 * 0.85, '40 mL/minute']] });
 check('T1 unrounded 40.399 (Chapter 11)', Math.abs(rec(ev, 'T1').Results[0].value - 40.399) < 0.0005);
 technical(ev, 'T2', { label: 'Q11 on 1 July (creatinine rising)', blocked: ['E_CREATININE_STABILITY_UNCONFIRMED'] });
@@ -115,14 +123,16 @@ technical(ev, 'T2', { label: 'Q8 antibody 22–52 days at 343 days', flags: ['W_
   values: [['fraction_lower', Math.pow(2, -343 / 22), '0.00203%'], ['fraction_upper', Math.pow(2, -343 / 52), '1.03%']] });
 const t1 = rec(ev, 'T1');
 check('Q8 shows no midpoint or average', !t1.Results.some((r) => /mid|average|mean/i.test(r.name)));
+check('onset is laboratory-defined: bounds 9 February to 12 May 2026 from MS-NEG3 and MS-DET (CALC-SPEC 1.1 C4)',
+  (() => { const t = E.eventOnset(X.cases.C28, X.cases.C28.events[0]); return t.lower === '2026-02-09' && t.upper === '2026-05-12' && rec(ev, 'I2').Assumptions.some((a) => /laboratory-defined/.test(a)); })());
 
 // ---------------------------------------------------------------- exports carry the limitation text and versions
 console.log('\nExport records');
 const b = E.buildExport(E.clone(X.cases.C28), { timestamp: '2026-10-20T12:00:00.000Z' });
 check('JSON export carries tool version, CALC-SPEC version, timestamp and limitation text',
-  b.Tool_Version === 'TTO Companion Tools v1.0' && b.Calculation_Version === 'CALC-SPEC 1.0' && b.Export_Timestamp && /not validated for regulated production use/.test(b.Limitation_Text));
+  b.Tool_Version === 'TTO Companion Tools v1.1' && b.Calculation_Version === 'CALC-SPEC 1.1' && b.Export_Timestamp && /not validated for regulated production use/.test(b.Limitation_Text));
 check('every record carries Calculation_Version, Tool_Version, Export_Timestamp and Limitations',
-  b.records.every((r) => r.Calculation_Version === 'CALC-SPEC 1.0' && r.Tool_Version === 'TTO Companion Tools v1.0' && r.Export_Timestamp && r.Limitations));
+  b.records.every((r) => r.Calculation_Version === 'CALC-SPEC 1.1' && r.Tool_Version === 'TTO Companion Tools v1.1' && r.Export_Timestamp && r.Limitations));
 const txt = E.toText(b), html = E.toHTML(b), csv = E.toCSV(b.records);
 check('text and HTML exports carry the limitation text and version label', txt.indexOf(E.LIMITATION_TEXT) >= 0 && html.indexOf('not validated for regulated production use') >= 0 && txt.indexOf(E.VERSION_LABEL) >= 0);
 check('CSV carries Tool_Version and Calculation_Version on every row', E.recordsFromCSV(csv).every((r) => r.Tool_Version === E.TOOL_VERSION && r.Calculation_Version === E.SPEC_VERSION));
